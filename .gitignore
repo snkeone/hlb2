@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.local
+
+logs/
+data/raw_ws/
+data/validation/runs/
+data/validation/run-*/
+data/validation/*.csv
+data/validation/*.json
+
+*.log
+*.pid
+.DS_Store

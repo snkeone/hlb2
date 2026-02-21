@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec env MODE=live TEST_MODE=1 DRY_RUN=0 LOG_TRADES_PATH="$ROOT/test-logs/trades.jsonl" "$ROOT/bin/hlb" up "$@"

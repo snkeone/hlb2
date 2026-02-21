@@ -1,0 +1,833 @@
+{
+  "leverage": 1,
+  "symbols": [
+    "BTC"
+  ],
+  "maxNotionalUsd": 5000,
+  "minNotionalUsd": 20,
+  "riskRatio": 0.014705999999999999,
+  "lot": {
+    "mode": "EQUITY_RATIO",
+    "minNotionalRatio": 0.7,
+    "maxNotionalRatio": 0.7,
+    "attackFirepowerThreshold": 2,
+    "effectiveEquityCapUsd": 5000,
+    "effectiveEquitySlopeAboveCap": 0.3,
+    "lowEquityBand": {
+      "enabled": true,
+      "thresholdUsd": 500,
+      "minNotionalRatio": 0.7,
+      "maxNotionalRatio": 0.9
+    },
+    "ratioA": 0.75,
+    "ratioB": 0.8,
+    "minNotionalUsd": 20,
+    "maxNotionalUsd": 5000
+  },
+  "capitalStages": {
+    "enabled": true,
+    "bands": [
+      {
+        "name": "s1",
+        "upToEquityUsd": 500,
+        "lotMinRatio": 0.7,
+        "lotMaxRatio": 0.9,
+        "feeMinNetUsd": 1,
+        "mapMinStrength": 0.3
+      },
+      {
+        "name": "s2",
+        "upToEquityUsd": 2000,
+        "lotMinRatio": 0.7,
+        "lotMaxRatio": 0.9,
+        "feeMinNetUsd": 1.2,
+        "mapMinStrength": 0.3
+      },
+      {
+        "name": "s3",
+        "upToEquityUsd": 5000,
+        "lotMinRatio": 0.6,
+        "lotMaxRatio": 0.8,
+        "feeMinNetUsd": 1.3,
+        "mapMinStrength": 0.4
+      },
+      {
+        "name": "s4",
+        "upToEquityUsd": 10000,
+        "lotMinRatio": 0.5,
+        "lotMaxRatio": 0.7,
+        "feeMinNetUsd": 1.4,
+        "mapMinStrength": 0.5
+      },
+      {
+        "name": "s5",
+        "upToEquityUsd": null,
+        "lotMinRatio": 0.45,
+        "lotMaxRatio": 0.65,
+        "feeMinNetUsd": 1.6,
+        "mapMinStrength": 0.55
+      }
+    ]
+  },
+  "lrc": {
+    "len": 100,
+    "devlen": 2,
+    "k": 1
+  },
+  "slopeThresholdsByLen": {
+    "4": {
+      "flat": 0.5
+    },
+    "default": {
+      "flat": 1,
+      "normal": 2
+    }
+  },
+  "lrcA": {
+    "len": 520,
+    "devlen": 3.5,
+    "k": 1
+  },
+  "lrcD": {
+    "len": 24,
+    "devlen": 3.5,
+    "k": 1
+  },
+  "directionalFirepower": {
+    "enabled": false,
+    "up": {
+      "long": 1,
+      "short": 1
+    },
+    "down": {
+      "long": 1,
+      "short": 1
+    },
+    "range": {
+      "long": 1,
+      "short": 1
+    }
+  },
+  "firepower": {
+    "weak": 1,
+    "normal": 1,
+    "STRONG": 1
+  },
+  "minExpectedUsd": 3,
+  "minBandDistanceUsd": 400,
+  "lossTimeout": {
+    "enabled": true,
+    "eps": 0,
+    "ms": 240000,
+    "softRatio": 0.2,
+    "softTimeoutMs": 90000,
+    "hardRatio": 0.26,
+    "proportional": {
+      "enabled": true,
+      "msPerUsd": 700,
+      "blend": 0.55,
+      "minTimeoutMs": 120000,
+      "maxTimeoutMs": 600000
+    },
+    "dynamicRealtime": {
+      "minTimeoutMs": 120000,
+      "maxTimeoutMs": 600000,
+      "stressExitMinHoldMs": 5000,
+      "stressExitMinAdverseRatio": 0.04,
+      "earlyExitMinHoldMs": 120000,
+      "earlyExitProgressMax": 0.08
+    }
+  },
+  "timeoutAlert": {
+    "enabled": true,
+    "consecutiveThreshold": 3,
+    "cooldownMs": 300000
+  },
+  "depthAwareExit": {
+    "enabled": true,
+    "shield": {
+      "enabled": true,
+      "entryBandUsd": 120,
+      "compareBandUsd": 120,
+      "minHoldMs": 5000,
+      "minBaselineUsd": 50000,
+      "collapseRatio": 0.45,
+      "minConsecutiveTicks": 2
+    },
+    "wallAhead": {
+      "enabled": true,
+      "fromProgress": 0.1,
+      "maxProgress": 0.9,
+      "lookaheadRatioMin": 0.2,
+      "lookaheadRatioMax": 0.85,
+      "minWallUsd": 70000,
+      "minProfitUsd": 0.2,
+      "nearLevels": 8,
+      "minWallVsNearRatio": 1.4,
+      "minConsecutiveTicks": 2
+    },
+    "flowImbalance": {
+      "enabled": true,
+      "topLevels": 8,
+      "adverseRatioThresholdLong": 1.35,
+      "adverseRatioThresholdShort": 1.35,
+      "useTradeFlow": true,
+      "tradeFlowWindowMs": 30000,
+      "tradeFlowMinTrades": 8,
+      "fallbackToBook": true,
+      "minHoldMs": 10000,
+      "minProgress": 0.05,
+      "minProfitUsd": 0.15,
+      "maxSpreadBps": 1.2,
+      "minConsecutiveTicks": 3
+    }
+  },
+  "flowAdaptiveExit": {
+    "enabled": true,
+    "earlyTakeProfit": {
+      "enabled": true,
+      "windowMs": 30000,
+      "minTrades": 8,
+      "minHoldMs": 8000,
+      "minProgress": 0.3,
+      "accelMinProgress": 0.5,
+      "minProfitUsd": 1.2,
+      "hostileRatioLong": 1.18,
+      "hostileRatioShort": 1.18,
+      "accelDecayThreshold": -0.3,
+      "accelAdverseRatioMin": 1.02,
+      "minConsecutiveTicks": 2
+    },
+    "entryQualityRouting": {
+      "enabled": true,
+      "highThreshold": 0.7,
+      "lowThreshold": 0.4,
+      "highSoftMul": 1.15,
+      "highHardMul": 1.1,
+      "highTimeoutMul": 1.2,
+      "lowSoftMul": 0.8,
+      "lowHardMul": 0.85,
+      "lowTimeoutMul": 0.75
+    },
+    "burstExit": {
+      "enabled": true,
+      "minHoldMs": 5000,
+      "minRateRatio": 4.0,
+      "minAdverseFlowPressure": 0.3,
+      "minTrades5s": 3,
+      "minTrades60s": 10,
+      "minTicks": 1,
+      "maxLossUsd": 0.5
+    },
+    "environmentDrift": {
+      "enabled": true,
+      "minHoldMs": 10000,
+      "regimeWeight": 0.45,
+      "mapWeight": 0.35,
+      "flowWeight": 0.25,
+      "mapDropRatio": 0.65,
+      "flowWindowMs": 30000,
+      "flowMinTrades": 8,
+      "flowHostilePressure": 0.25,
+      "tightenScore": 0.35,
+      "exitScore": 0.7,
+      "tightenTimeoutMul": 0.7,
+      "tightenSoftMul": 0.85,
+      "tightenHardMul": 0.88,
+      "minConsecutiveTicks": 2,
+      "maxLossUsd": 0.8
+    },
+    "lossTightening": {
+      "enabled": true,
+      "windowMs": 30000,
+      "minTrades": 8,
+      "minHoldMs": 5000,
+      "hostileRatioLong": 1.3,
+      "hostileRatioShort": 1.3,
+      "hostileLargeTrades": 2,
+      "softRatioMul": 0.85,
+      "hardRatioMul": 0.75
+    },
+    "holdingPressure": {
+      "enabled": true,
+      "fundingHostileLong": 0.0003,
+      "fundingHostileShort": 0.0003,
+      "premiumHostileLong": 0.0005,
+      "premiumHostileShort": 0.0005,
+      "timeoutMul": 0.85,
+      "softRatioMul": 0.9,
+      "hardRatioMul": 0.9
+    }
+  },
+  "tradeFlow": {
+    "enabled": true,
+    "windowsMs": [
+      5000,
+      30000,
+      60000
+    ],
+    "defaultWindowMs": 30000,
+    "minTradesForSignal": 8,
+    "largeTradeFactor": 3.0,
+    "maxBufferSize": 5000,
+    "cleanupIntervalMs": 3000
+  },
+  "entryFlowGate": {
+    "enabled": true,
+    "mode": "hostile_only",
+    "windowMs": 30000,
+    "minTrades": 10,
+    "hostileThresholdLong": 0.75,
+    "hostileThresholdShort": 0.7,
+    "alignedThresholdLong": 0.03,
+    "alignedThresholdShort": 0.03,
+    "preferWindow": true,
+    "divergenceGuardEnabled": false,
+    "divergenceMinTrades5s": 3,
+    "divergenceMinTrades60s": 15,
+    "divergenceShortStrength": 0.3
+  },
+  "oiPriceTrapGate": {
+    "enabled": false,
+    "minTrades": 8,
+    "minPriceDeltaBps": 0.25,
+    "minOiDeltaRatio": 0.00005,
+    "minAdverseFlowPressure": 0.12
+  },
+  "ctxMicroGate": {
+    "enabled": false,
+    "hostileFundingLong": 0.0003,
+    "hostileFundingShort": 0.0003,
+    "hostilePremiumLong": 0.0005,
+    "hostilePremiumShort": 0.0005,
+    "maxImpactSpreadBps": 3.0
+  },
+  "wsAdaptive": {
+    "tpCap": {
+      "enabled": true,
+      "baseSpanRatio": 0.25,
+      "lowSpanThresholdUsd": 500,
+      "lowSpanRatio": 0.35,
+      "volatilityWeight": 0.25,
+      "volatilityRefBps": 120,
+      "minCapUsd": 120,
+      "maxCapUsd": 450,
+      "selfCalibrate": {
+        "enabled": true,
+        "logFilePath": "logs/trades.jsonl",
+        "sampleSize": 20,
+        "minSampleSize": 6,
+        "maxScanLines": 400,
+        "cacheTtlMs": 300000,
+        "baseOffset": 0.3,
+        "slope": 0.8,
+        "minMultiplier": 0.4,
+        "maxMultiplier": 1.2
+      }
+    },
+    "sizeScalars": {
+      "flow": {
+        "enabled": true,
+        "windowMs": 30000,
+        "minTrades": 8,
+        "minScalar": 0.6,
+        "maxBoost": 1.1,
+        "boostSlope": 0.25,
+        "penaltySlope": 0.8,
+        "divergenceGuardEnabled": true,
+        "divergenceMinTrades5s": 3,
+        "divergenceMinTrades60s": 15,
+        "divergenceShortStrength": 0.3,
+        "divergencePenaltyMul": 0.85
+      },
+      "impact": {
+        "enabled": true,
+        "goodSpreadBps": 1.2,
+        "badSpreadBps": 4.0,
+        "minScalar": 0.45,
+        "maxBoost": 1.03
+      },
+      "acceleration": {
+        "enabled": true,
+        "windowMs": 30000,
+        "minTrades": 8,
+        "minScalar": 0.7,
+        "maxBoost": 1.08,
+        "boostSlope": 0.15,
+        "penaltySlope": 0.25
+      },
+      "ctx": {
+        "enabled": true,
+        "minScalar": 0.6,
+        "maxBoost": 1.05,
+        "hostileFundingLong": 0.0003,
+        "hostileFundingShort": 0.0003,
+        "hostilePremiumLong": 0.0005,
+        "hostilePremiumShort": 0.0005,
+        "favorableFunding": 0.00015,
+        "favorablePremium": 0.00025,
+        "hostilePenaltySlope": 0.2,
+        "favorableBoostSlope": 0.03
+      }
+    }
+  },
+  "b2": {
+    "tpStretch": 1,
+    "tpStretchHoldMs": 0,
+    "rangeTpStretchDisabled": false,
+    "tpSplit": {
+      "closeRatio": 0.68,
+      "minRemainRatio": 0.55,
+      "enabled": true
+    },
+    "hybridMode": {
+      "enabled": true
+    }
+  },
+  "riskGuards": {
+    "enabled": true,
+    "hardSlCooldownMs": 120000,
+    "reduceSizeAfterLoss": true,
+    "reduceSizeFactor": 0.7,
+    "reduceSizeWindowMs": 180000,
+    "awayAutoHaltEnabled": true,
+    "awayHardSlStreak": 2,
+    "awayNetWindowTrades": 10,
+    "awayMinTrades": 6,
+    "awayMinNetPerTradeUsd": -0.2,
+    "awayApplyInTestMode": false
+  },
+  "performanceGuards": {
+    "enabled": true,
+    "maxDrawdownPct": 18,
+    "kpiWindowTrades": 60,
+    "minAvgNetUsd": 0,
+    "minAvgWinUsd": 0.2,
+    "minWinRate": 0.2,
+    "lockOnTrigger": true,
+    "autoResume": true,
+    "resumeCooldownMs": 3600000
+  },
+  "fees": {
+    "makerBps": 1.5,
+    "takerBps": 4.5,
+    "tpExitMode": "auto"
+  },
+  "metaGate": {
+    "enabled": true,
+    "maxSpreadBps": 0.5,
+    "maxSpreadJumpBps": 0.8,
+    "maxPriceVelocityBps": 1.2,
+    "maxCShock": 2.2,
+    "toxicityThreshold": 0.9,
+    "holdMs": 1200
+  },
+  "startup": {
+    "fastStart": {
+      "enabled": true,
+      "maxElapsedMs": 3600000,
+      "requireDepthReady": true,
+      "requireLrcTvReady": true
+    },
+    "restartAssist": {
+      "enabled": true,
+      "hotRestartMaxGapMs": 180000,
+      "warmRestartMaxGapMs": 1800000,
+      "hotSizeScalar": 1,
+      "warmSizeScalar": 0.8,
+      "coldSizeScalar": 0.6
+    }
+  },
+  "startupGuard": {
+    "enabled": true,
+    "noOrderMs": 300000,
+    "windowMs": 7200000,
+    "sizeScalar": 0.85,
+    "minMapStrengthAdd": 0.05,
+    "minPathDepthAdd": 1,
+    "freezeAutoTuneApplyMs": 5400000,
+    "applyInTestMode": true,
+    "liveBlockUntilAStable": false
+  },
+  "topDownModel": {
+    "enabled": true,
+    "activeProfile": "balanced",
+    "aBars": 168,
+    "bBars": 72,
+    "profiles": {
+      "balanced": {
+        "aBars": 168,
+        "bBars": 72
+      },
+      "wide": {
+        "aBars": 168,
+        "bBars": 96
+      }
+    }
+  },
+  "b2Upgrade": {
+    "executionModel": {
+      "enabled": true,
+      "useDistanceEntry": false,
+      "distanceGuardMode": "shadow",
+      "minEntryQuality": 0.10,
+      "minMapStrength": 0.05,
+      "edgeFallback": {
+        "enabled": true,
+        "minMapStrength": 0.5,
+        "minPathDepth": 1
+      },
+      "rangeMode": "distance",
+      "entryFlowGate": {
+        "enabled": true,
+        "mode": "hostile_only",
+        "divergenceGuardEnabled": false,
+        "hostileThresholdLong": 0.75,
+        "hostileThresholdShort": 0.82,
+        "windowMs": 30000,
+        "minTrades": 8
+      },
+      "requireStructuralPath": true,
+      "srReferenceGuard": {
+        "enabled": true,
+        "windowUsd": 80,
+        "minRank": 0.1,
+        "minScore": 0,
+        "minNotionalUsd": 0,
+        "requireBothSides": false,
+        "allowEdgeLike": true,
+        "allowUnknownStrength": true,
+        "enforceWhenClustersPresent": true
+      }
+    },
+    "arenaGuard": {
+      "enabled": true,
+      "paddingRatio": 0.08
+    },
+    "containmentGate": {
+      "enabled": true,
+      "minInclusionRatio": 0.7,
+      "requireReady": true
+    },
+    "edgeControl": {
+      "baseRatio": 0.25,
+      "minThresholdUsd": 8,
+      "maxThresholdUsd": 5000
+    },
+    "execution": {
+      "maxSpreadBps": 2,
+      "maxVelocityBps": 2,
+      "maxCShock": 0.7,
+      "makerMaxSpreadBps": 0.5,
+      "makerMaxVelocityBps": 0.4
+    },
+    "adaptiveSize": {
+      "enabled": false,
+      "minScalar": 1,
+      "maxScalar": 1
+    },
+    "structureQuality": {
+      "enabled": false,
+      "minScalar": 1,
+      "maxScalar": 1,
+      "fallbackQuality": 1
+    },
+    "ladderAttack": {
+      "enabled": false,
+      "requireSrNext": true,
+      "minTp2DistanceRatio": 1.25,
+      "distanceSlope": 0.35,
+      "boostMax": 1.12
+    },
+    "higherTfControl": {
+      "enabled": true,
+      "applyOnRegimeOnly": true,
+      "minReadyFrames": 1,
+      "blockOnConflict": false,
+      "blockThreshold": -0.5,
+      "sizePenaltyMin": 1,
+      "tpPenaltyMin": 1,
+      "weight15m": 0.65,
+      "weight1h": 0.35,
+      "sizeBoostMax": 1.12,
+      "tpBoostMax": 1.1
+    },
+    "angleDirectionBoost": {
+      "enabled": true,
+      "bAlignedBoost": 1.08,
+      "aAlignedExtraBoost": 1.08,
+      "angle15mMagnitudeEnabled": true,
+      "angle15mRefNormalizedSlope": 2,
+      "angle15mMaxBoost": 1.12
+    },
+    "abTrendBoost": {
+      "enabled": true,
+      "bothAlignedBoost": 1.15
+    },
+    "aCenterControl": {
+      "enabled": true,
+      "centerBand": 0.15,
+      "centerMul": 0.9
+    },
+    "clusterWallBoost": {
+      "enabled": true,
+      "maxBoost": 1.18,
+      "clusterWeight": 0.55,
+      "wallWeight": 0.45,
+      "mapStrengthWeight": 0.5,
+      "pathDepthWeight": 0.3,
+      "clusterCountWeight": 0.2,
+      "maxClusters": 7,
+      "maxPathDepth": 4,
+      "nearWindowUsd": 120,
+      "minWallUsd": 70000,
+      "wallSaturationUsd": 250000
+    },
+    "srClusterBridge": {
+      "enabled": true,
+      "maxClusters": 7,
+      "mergeGapUsd": 90,
+      "minDistanceUsd": 8,
+      "minClusterCount": 1,
+      "cacheTtlMs": 2500,
+      "invalidateMidDriftUsd": 120,
+      "promotion": {
+        "enabled": true,
+        "linkBandRatio": 0.08,
+        "linkBandMaxUsd": 30,
+        "minBounceAbsUsd": 12,
+        "minBounceRatio": 0.03,
+        "nearNoiseUsd": 12,
+        "minTouches": 2
+      }
+    }
+  },
+  "lrcWsOrbit": {
+    "enabled": false,
+    "zoneBoostMax": 0,
+    "zonePenaltyMax": 0.25,
+    "edgeRatioBoostMax": 0,
+    "edgeRatioPenaltyMax": 0.18,
+    "tpStretchBoostMax": 0,
+    "tpStretchPenaltyMax": 0.08,
+    "microSpreadBpsRef": 0.8,
+    "microVelocityBpsRef": 0.8,
+    "microShockRef": 0.25
+  },
+  "structuralDistance": {
+    "enabled": true,
+    "minStructuralDistanceUsd": 8,
+    "minStructuralDistanceRatio": 0.25,
+    "preferChannelSpan": true,
+    "fallbackMode": "sr_to_edge",
+    "trustConditions": {
+      "allowEdgeEdge": false,
+      "minEdgeTouch": 2,
+      "maxOneSideStayPct": 70,
+      "maxBandWidthChangePct": 20
+    }
+  },
+  "srDistanceGuard": {
+    "enabled": true,
+    "minSRDistanceUsd": 80,
+    "maxSRDistanceUsd": 2500
+  },
+  "rangeFilter": {
+    "lookbackMin": 15,
+    "minRangeUsd": 100
+  },
+  "bar1h": {
+    "lookbackBars": 3,
+    "adaptive": {
+      "enabled": true,
+      "startLookbackBars": 3,
+      "expandedLookbackBars": 6,
+      "expandStepBars": 1,
+      "lowSpanUsd": 45,
+      "highSpanUsd": 90,
+      "minFinalSpanUsd": 30,
+      "switchCooldownMs": 300000,
+      "weakOrderMsAfterSwitch": 300000
+    }
+  },
+  "b1": {
+    "enabled": true,
+    "minBarsRequired": 50,
+    "snapshotRefreshSec": 8,
+    "maxSrCandidates": 10,
+    "dailyArenaBufferUsd": 20,
+    "minOverlapRatio": 0.7,
+    "rebuild": {
+      "railsBreakBufferUsd": 0,
+      "spanChangeRatioThreshold": 0.12
+    },
+    "block": {
+      "enabled": false,
+      "requireInsideA": false,
+      "maxUpperGapPct": 0.3,
+      "maxLowerGapPct": 0.3,
+      "maxCenterOutsidePct": 0.2
+    },
+    "structureRecognition": {
+      "minDepthSpanUsd": 50,
+      "minDepthSpanRatioOfB15m": 0.03,
+      "minDepthSpanCapUsd": 220
+    },
+    "higherTfValidation": {
+      "enabled": true,
+      "minSpanRatioOf1h": 0.3,
+      "minSpanUsd": 30,
+      "clampToBarRange": false,
+      "prefer": "intersection"
+    }
+  },
+  "b0": {
+    "enabled": true,
+    "mergeDistanceUsd": 180,
+    "maxLevelsPerSide": 12,
+    "maxClustersPerSide": 6,
+    "dailyArenaBufferUsd": 20
+  },
+  "sr": {
+    "enabled": true,
+    "pivot": {
+      "leftBars": 5,
+      "rightBars": 0,
+      "lookbackBars": 150
+    },
+    "filter": {
+      "enabled": true,
+      "nearRatio": 0.1,
+      "maxLevels": 3,
+      "pairOuterPriority": true
+    }
+  },
+  "viewpoint": {
+    "minStepUsd": 158,
+    "arenaStepRatio": 0.12,
+    "tpNormalMaxT": 1,
+    "bar15mRangeWeight": 1.1100000000000003,
+    "nearRetryFactor": 0.6,
+    "nearRetryMinUsd": 20
+  },
+  "phaseMarkers": {
+    "phase2Start": {
+      "ts": 1767748336178,
+      "sysTime": "2026-01-07T01:12:16Z",
+      "note": "Set by ops: Phase2 log verification window start"
+    }
+  },
+  "srAggregate": {
+    "enabled": true,
+    "windowMin": 15,
+    "refreshSec": 20,
+    "targetBands": 8,
+    "mergeUsd": 400,
+    "mergeUsdMin": 80,
+    "mergeUsdMax": 600,
+    "minBandWidthUsd": 120,
+    "minStructureWidthUsd": 120,
+    "maxBands": 6,
+    "repPoint": "max_thickness",
+    "kScale": 1
+  },
+  "lrcTpFallback": {
+    "enabled": false
+  },
+  "autoTuner": {
+    "capitalUsd": 2000,
+    "allowFeeEdgeGuardEnable": true,
+    "fullAuto": {
+      "enabled": true
+    },
+    "lastTradeSource": "/home/hlws/hlws-bot/test-logs/trades.jsonl",
+    "lastWindowTrades": 22,
+    "lastWindowAvgPnlUsd": -0.499269,
+    "hybridAuto": {
+      "minHoldMs": 7200000,
+      "enabled": true,
+      "lastSwitchTs": 1770785240269
+    },
+    "lotTuning": {
+      "enabled": true
+    },
+    "sessionTuning": {
+      "enabled": true,
+      "tzOffsetMin": 540,
+      "lastDominantSession": "eu",
+      "lastEvaluatedAt": 1770814046077
+    }
+  },
+  "feeEdgeGuard": {
+    "minNetUsd": 1.8,
+    "minNetPer100Notional": 0.016341643835616437,
+    "exitMode": "maker",
+    "enabled": true,
+    "strictMinNetFloor": true,
+    "autoSizeBoost": true,
+    "maxSizeBoostMul": 2.5,
+    "expectancyRealizationFactor": 0.6,
+    "dynamic": {
+      "enabled": true,
+      "tzOffsetMin": 540,
+      "sessionMul": {
+        "asia": 1,
+        "eu": 1.08,
+        "us": 1.12
+      },
+      "stress": {
+        "spreadBpsRef": 0.6,
+        "velocityBpsRef": 0.7,
+        "maxMul": 1.2
+      }
+    }
+  },
+  "entryPolicy": {
+    "enforceStructuralTpSource": false,
+    "enforceMinStructuralTpDistance": false
+  },
+  "entryRateMonitor": {
+    "enabled": true,
+    "lineAlertEnabled": true,
+    "emailSignalEnabled": true,
+    "minEntryRate": 0.02,
+    "maxEntryRate": 0.1,
+    "minEvaluated": 50,
+    "alertCooldownMs": 1800000
+  },
+  "tuningPresets": {
+    "applyOnLoad": false,
+    "active": "custom",
+    "profiles": {
+      "conservative": {
+        "minBandDistanceUsd": 500,
+        "minExpectedUsd": 4
+      },
+      "balanced": {
+        "minBandDistanceUsd": 400,
+        "minExpectedUsd": 3
+      },
+      "aggressive": {
+        "minBandDistanceUsd": 300,
+        "minExpectedUsd": 2
+      }
+    }
+  },
+  "compatibility": {
+    "legacyKeysEnabled": true
+  },
+  "depthGuards": {
+    "enabled": false,
+    "minSrNotionalUsd": 1000000,
+    "minTpNotionalUsd": 2000000,
+    "requireBothSides": true
+  },
+  "depthRecheck": {
+    "enabled": true,
+    "mode": "observe_only",
+    "windowUsd": 80,
+    "minSrNotionalUsd": 700000,
+    "minTpNotionalUsd": 1200000,
+    "minSlNotionalUsd": 700000
+  }
+}

@@ -1,0 +1,1465 @@
+#!/usr/bin/env node
+import 'dotenv/config';
+import { spawn, spawnSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import minimist from 'minimist';
+import WebSocket from 'ws';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '..');
+const PID_FILE = path.join(ROOT, '.hlb.pid');
+const STATUS_PID_FILE = path.join(ROOT, '.hlb.ws-status.pid');
+const TUNE_DAEMON_PID_FILE = path.join(ROOT, '.hlb.tune.pid');
+const PROFIT_TUNER_PID_FILE = path.join(ROOT, '.profit_tuner.pid');
+const WS_URL = 'ws://localhost:8788';
+const OK_STATES = new Set(['NO_FEED', 'STABLE', 'STALLED']);
+const STATUS_TIMEOUT_MS = 30000;
+const PROCESS_READY_TIMEOUT_MS = 10000;
+const PROCESS_READY_STABLE_MS = 3000;
+const MANAGED_TARGETS = [
+  path.join(ROOT, 'index.js'),
+  path.join(ROOT, 'ws', 'ws-status-v1.js'),
+  path.join(ROOT, 'ws', 'server.js'),
+  path.join(ROOT, 'dist-runtime', 'ws', 'server.js'),
+  path.join(ROOT, 'dist-runtime', 'ws', 'ws-status-v1.js'),
+];
+const MANAGED_TARGET_SUFFIXES = [
+  'index.js',
+  path.join('ws', 'ws-status-v1.js'),
+  path.join('ws', 'server.js'),
+  path.join('dist-runtime', 'ws', 'server.js'),
+  path.join('dist-runtime', 'ws', 'ws-status-v1.js'),
+];
+const PM2_SYSTEM_SERVICE = 'pm2-hlws.service';
+
+function normalizePathLike(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function isManagedTargetPath(value) {
+  const normalized = normalizePathLike(value);
+  if (!normalized) return false;
+  if (MANAGED_TARGETS.some(t => normalized.includes(normalizePathLike(t)))) return true;
+  return MANAGED_TARGET_SUFFIXES.some((suffix) => {
+    const s = normalizePathLike(suffix);
+    return normalized.endsWith(s) || normalized.includes(` ${s}`);
+  });
+}
+
+function useDistRuntime() {
+  const raw = String(process.env.HLB_USE_DIST_RUNTIME ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true';
+}
+
+function runtimeEntry(name) {
+  if (useDistRuntime()) {
+    return path.join(ROOT, 'dist-runtime', 'ws', `${name}.js`);
+  }
+  return path.join(ROOT, 'ws', `${name}.js`);
+}
+
+function usage() {
+  console.error('usage: hlb up [test|live|dry] [-d] [--no-tune] [--no-tune-daemon] [--no-apply] [--input FILE] [--min-samples N] [--max-change-ratio R] [--window-min N] [--adaptive] [--regime trend|range|high_vol] | hlb up-live [--send-orders] [--no-tune] [--no-tune-daemon] [--no-apply] [--input FILE] [--min-samples N] [--max-change-ratio R] [--window-min N] [--adaptive] [--regime trend|range|high_vol] | hlb live-preflight [--strict] | hlb prep-live | hlb signer-setup | hlb signer-start | hlb signer-stop | hlb tune-daemon-start | hlb tune-daemon-stop | hlb tune-daemon-status | hlb profit-tune-start [--interval-sec N] [--allow-tune-daemon] | hlb profit-tune-stop | hlb profit-tune-status | hlb profit-tune-tick [--allow-tune-daemon] | hlb profit-tune-reset [--restore-baseline] | hlb health-scan [--file FILE] [--window-hours N] [--latest-revision-only] [--since-revision REV] [--json] | hlb kpi-mail [--raw FILE] [--trades FILE] [--dry-run] | hlb kpi-mail-install [--every-min N] | hlb kpi-mail-uninstall | hlb reset-logs --force [--reason TEXT] [--no-backup] | hlb prune-logs [--keep-reset N] [--keep-baseline N] [--keep-kpi-days N] | hlb log-maintenance [--max-log-mb N] [--keep-marker-lines N] [--keep-reset N] [--keep-baseline N] [--keep-kpi-days N] | hlb log-maintenance-install [--every-min N] | hlb log-maintenance-uninstall | hlb down [--force] | hlb tune [--no-apply] [--input FILE] [--min-samples N] [--max-change-ratio R] [--window-min N] [--adaptive] [--regime trend|range|high_vol]');
+  process.exit(1);
+}
+
+function getPm2ManagedIdsForTargets() {
+  let raw = '';
+  try {
+    raw = spawnSync('pm2', ['jlist'], { encoding: 'utf8' }).stdout || '';
+  } catch (_) {
+    return [];
+  }
+  if (!raw.trim()) return [];
+  let list = [];
+  try {
+    list = JSON.parse(raw);
+  } catch (_) {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  const ids = [];
+  for (const proc of list) {
+    const pmId = proc?.pm2_env?.pm_id;
+    const execPath = proc?.pm2_env?.pm_exec_path || '';
+    if (!Number.isFinite(pmId)) continue;
+    if (isManagedTargetPath(execPath)) {
+      ids.push(pmId);
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function stopPm2ManagedTargets() {
+  const ids = getPm2ManagedIdsForTargets();
+  if (ids.length === 0) return [];
+  const stopped = [];
+  for (const id of ids) {
+    try {
+      const res = spawnSync('pm2', ['stop', String(id)], { encoding: 'utf8' });
+      if ((res.status ?? 1) === 0) {
+        stopped.push(id);
+      }
+    } catch (_) {}
+  }
+  return stopped;
+}
+
+function stopPm2Daemon() {
+  try {
+    const res = spawnSync('pm2', ['kill'], { encoding: 'utf8' });
+    return (res.status ?? 1) === 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function ensurePm2SystemServiceDisabled() {
+  const result = {
+    attempted: false,
+    success: false,
+    notFound: false,
+    needsPrivilege: false,
+    method: null
+  };
+  const tryRun = (cmd, args) => {
+    try {
+      return spawnSync(cmd, args, { encoding: 'utf8' });
+    } catch (_) {
+      return null;
+    }
+  };
+  const classifyNotFound = (text) => /not found|not loaded|No such file|could not be found/i.test(String(text || ''));
+  const disableArgs = ['disable', '--now', PM2_SYSTEM_SERVICE];
+  const sudoRes = tryRun('sudo', ['-n', 'systemctl', ...disableArgs]);
+  result.attempted = true;
+  if (sudoRes && (sudoRes.status ?? 1) === 0) {
+    result.success = true;
+    result.method = 'sudo';
+    return result;
+  }
+  const sudoMsg = `${sudoRes?.stdout || ''}\n${sudoRes?.stderr || ''}`;
+  if (classifyNotFound(sudoMsg)) {
+    result.notFound = true;
+    return result;
+  }
+  const directRes = tryRun('systemctl', disableArgs);
+  if (directRes && (directRes.status ?? 1) === 0) {
+    result.success = true;
+    result.method = 'direct';
+    return result;
+  }
+  const directMsg = `${directRes?.stdout || ''}\n${directRes?.stderr || ''}`;
+  if (classifyNotFound(directMsg)) {
+    result.notFound = true;
+    return result;
+  }
+  result.needsPrivilege = true;
+  return result;
+}
+
+function modeEnv(mode) {
+  const isDry = mode === 'dry';
+  const isLive = mode === 'live';
+  const isTest = mode === 'test';
+  const testMode = process.env.TEST_MODE ?? (isLive ? '0' : '1');
+  return {
+    ...process.env,
+    MODE: mode,
+    HL_ENABLE: isDry ? '0' : '1',
+    TEST_MODE: testMode,
+    LOG_TRADES_PATH: (isDry || isTest)
+      ? path.join(ROOT, 'test-logs', 'trades.jsonl')
+      : path.join(ROOT, 'logs', 'trades.jsonl'),
+    // LINE_NOTIFY フラグ伝搬（master は '1'=ON デフォルト）
+    LINE_NOTIFY_ENABLED: process.env.LINE_NOTIFY_ENABLED ?? '1',
+    LINE_NOTIFY_TRADES_ENABLED: process.env.LINE_NOTIFY_TRADES_ENABLED ?? '0',
+    LINE_NOTIFY_WINRATE_ENABLED: process.env.LINE_NOTIFY_WINRATE_ENABLED ?? '0',
+    LINE_NOTIFY_GENERIC_ENABLED: process.env.LINE_NOTIFY_GENERIC_ENABLED ?? '0',
+    LINE_NOTIFY_ALERTS_ENABLED: process.env.LINE_NOTIFY_ALERTS_ENABLED ?? '0',
+    LINE_NOTIFY_REPORTS_ENABLED: process.env.LINE_NOTIFY_REPORTS_ENABLED ?? '0',
+  };
+}
+
+function readPid() {
+  if (!fs.existsSync(PID_FILE)) return null;
+  const pidStr = fs.readFileSync(PID_FILE, 'utf8').trim();
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function readStatusPid() {
+  if (!fs.existsSync(STATUS_PID_FILE)) return null;
+  const pidStr = fs.readFileSync(STATUS_PID_FILE, 'utf8').trim();
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function readTuneDaemonPid() {
+  if (!fs.existsSync(TUNE_DAEMON_PID_FILE)) return null;
+  const pidStr = fs.readFileSync(TUNE_DAEMON_PID_FILE, 'utf8').trim();
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function readProfitTunerPid() {
+  if (!fs.existsSync(PROFIT_TUNER_PID_FILE)) return null;
+  const pidStr = fs.readFileSync(PROFIT_TUNER_PID_FILE, 'utf8').trim();
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function findProfitTunerPids() {
+  let output = '';
+  try {
+    output = spawnSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' }).stdout || '';
+  } catch (_) {
+    return [];
+  }
+  const marker = path.join(ROOT, 'scripts', 'ops', 'profit_tuner.js');
+  const pids = [];
+  for (const line of output.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const cmd = m[2] || '';
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    if (cmd.includes(marker) && cmd.includes(' daemon')) {
+      pids.push(pid);
+    }
+  }
+  return [...new Set(pids)];
+}
+
+function isAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopPidFile(pidFile) {
+  if (!fs.existsSync(pidFile)) return false;
+  const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
+  const pid = Number(pidStr);
+  if (!pid) return false;
+  if (!isAlive(pid)) {
+    fs.rmSync(pidFile, { force: true });
+    return false;
+  }
+  const stopped = await stopPid(pid);
+  fs.rmSync(pidFile, { force: true });
+  return stopped;
+}
+
+async function stopPid(pid) {
+  if (!pid || !isAlive(pid)) return false;
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (_) {}
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && isAlive(pid)) {
+    await new Promise(res => setTimeout(res, 100));
+  }
+  if (!isAlive(pid)) return true;
+  // fallback: stubborn process
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (_) {}
+  const killDeadline = Date.now() + 2000;
+  while (Date.now() < killDeadline && isAlive(pid)) {
+    await new Promise(res => setTimeout(res, 100));
+  }
+  return !isAlive(pid);
+}
+
+async function stopProcess() {
+  return stopPidFile(PID_FILE);
+}
+
+async function stopStatusProcess() {
+  return stopPidFile(STATUS_PID_FILE);
+}
+
+async function stopTuneDaemonProcess() {
+  return stopPidFile(TUNE_DAEMON_PID_FILE);
+}
+
+async function stopProfitTunerProcess() {
+  const fromPidFile = await stopPidFile(PROFIT_TUNER_PID_FILE);
+  let stoppedAny = fromPidFile;
+  for (const pid of findProfitTunerPids()) {
+    const ok = await stopPid(pid);
+    stoppedAny = stoppedAny || ok;
+  }
+  fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+  return stoppedAny;
+}
+
+function detectOpenPositions() {
+  const candidates = [
+    path.join(ROOT, 'ws', 'engine_state.TEST.json'),
+    path.join(ROOT, 'ws', 'engine_state.LIVE.json'),
+    path.join(ROOT, 'ws', 'engine_state.json')
+  ];
+  const result = [];
+  for (const p of candidates) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const raw = fs.readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      const pos = parsed?.openPosition;
+      const side = String(pos?.side ?? '').toLowerCase();
+      const size = Number(pos?.size);
+      if ((side === 'buy' || side === 'sell') && Number.isFinite(size) && size > 0) {
+        result.push({
+          path: p,
+          side,
+          size,
+          entryPx: Number.isFinite(Number(pos?.entryPx)) ? Number(pos.entryPx) : null,
+          entryTs: Number.isFinite(Number(pos?.entryTs)) ? Number(pos.entryTs) : null
+        });
+      }
+    } catch (_) {}
+  }
+  return result;
+}
+
+async function waitForNoOpenPositions(timeoutMs = 10 * 60 * 1000, pollMs = 1000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const open = detectOpenPositions();
+    if (open.length === 0) return { ok: true, waitedMs: Date.now() - startedAt };
+    await new Promise(res => setTimeout(res, pollMs));
+  }
+  return { ok: false, waitedMs: Date.now() - startedAt, remaining: detectOpenPositions() };
+}
+
+async function doDown(options = {}) {
+  const force = options.force === true;
+  const openPositions = detectOpenPositions();
+  if (!force && openPositions.length > 0) {
+    const details = openPositions
+      .map(p => `${path.basename(p.path)}:${p.side}:${p.size}`)
+      .join(', ');
+    console.error(`[ABORT] open position detected, stop refused (${details})`);
+    console.error('[HINT] close position first, or run `hlb down --force` to override');
+    process.exit(1);
+  }
+  if (force && openPositions.length > 0) {
+    const details = openPositions
+      .map(p => `${path.basename(p.path)}:${p.side}:${p.size}`)
+      .join(', ');
+    console.log(`[WAIT] open position detected, waiting for exit before shutdown (${details})`);
+    const waitResult = await waitForNoOpenPositions();
+    if (!waitResult.ok) {
+      const remainDetails = (waitResult.remaining || [])
+        .map(p => `${path.basename(p.path)}:${p.side}:${p.size}`)
+        .join(', ');
+      console.error(`[ABORT] timeout waiting for position close (${Math.round(waitResult.waitedMs / 1000)}s): ${remainDetails}`);
+      console.error('[HINT] close manually, then run `hlb down --force` again');
+      process.exit(1);
+    }
+    console.log(`[OK] positions closed (${Math.round(waitResult.waitedMs / 1000)}s), continue shutdown`);
+  }
+
+  const pm2SystemService = ensurePm2SystemServiceDisabled();
+  const pm2Stopped = stopPm2ManagedTargets();
+  const pm2DaemonStopped = stopPm2Daemon();
+  const stopped = await stopProcess();
+  const stoppedStatus = await stopStatusProcess();
+  const stoppedTuneDaemon = await stopTuneDaemonProcess();
+  const stoppedProfitTuner = await stopProfitTunerProcess();
+  // pid file がない/壊れている場合でも、管理対象プロセスを補足停止する
+  const managed = findManagedPids();
+  let stoppedManaged = false;
+  for (const pid of managed) {
+    const ok = await stopPid(pid);
+    stoppedManaged = stoppedManaged || ok;
+  }
+  const remainingManaged = findManagedPids();
+  if (remainingManaged.length > 0) {
+    console.error(`[ERROR] failed to stop managed process: ${remainingManaged.join(', ')}`);
+    console.error('[HINT] stop PM2 app too: `pm2 ls` then `pm2 stop <id|name>`');
+    process.exit(1);
+  }
+  if (stopped || stoppedStatus || stoppedTuneDaemon || stoppedProfitTuner || stoppedManaged || pm2Stopped.length > 0 || pm2DaemonStopped || pm2SystemService.success) {
+    console.log('[OK] stopped');
+    if (pm2SystemService.success) {
+      console.log(`[INFO] systemd auto-respawn disabled: ${PM2_SYSTEM_SERVICE} (${pm2SystemService.method})`);
+    } else if (pm2SystemService.needsPrivilege) {
+      console.log(`[INFO] PM2 system service may still auto-respawn. Run: \`sudo systemctl disable --now ${PM2_SYSTEM_SERVICE}\``);
+    } else if (!pm2DaemonStopped) {
+      console.log(`[INFO] PM2 daemon is still active. To prevent auto-respawn: \`sudo systemctl disable --now ${PM2_SYSTEM_SERVICE}\``);
+    }
+    return;
+  }
+  console.log('[INFO] already stopped');
+}
+
+function doTune(args = {}) {
+  const scriptPath = path.join(ROOT, 'scripts', 'ops', 'auto_tune_from_logs.js');
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error('tune script not found: scripts/ops/auto_tune_from_logs.js');
+  }
+  const lockPath = '/tmp/hlws-auto-tune.lockfile';
+  let lockFd = null;
+  const lockPayload = `${process.pid}\n`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      lockFd = fs.openSync(lockPath, 'wx');
+      fs.writeFileSync(lockFd, lockPayload);
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') {
+        throw err;
+      }
+      // stale lock recovery
+      let ownerPid = null;
+      try {
+        const raw = fs.readFileSync(lockPath, 'utf8').trim();
+        const parsed = Number(raw);
+        ownerPid = Number.isFinite(parsed) ? parsed : null;
+      } catch (_) {}
+
+      const alive = (() => {
+        if (!ownerPid || ownerPid <= 0) return false;
+        try {
+          process.kill(ownerPid, 0);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      })();
+
+      if (!alive) {
+        try { fs.rmSync(lockPath, { force: true }); } catch (_) {}
+        continue;
+      }
+      console.warn(`[WARN] tune skipped: another tune process is running (pid=${ownerPid})`);
+      return false;
+    }
+  }
+  if (lockFd === null) {
+    console.warn('[WARN] tune skipped: lock acquisition failed');
+    return false;
+  }
+
+  const runApply = args.apply !== false;
+  const nodeArgs = [scriptPath];
+  if (runApply) nodeArgs.push('--apply');
+  if (typeof args.input === 'string' && args.input.trim()) {
+    nodeArgs.push('--input', args.input.trim());
+  }
+  if (args.minSamples !== undefined && args.minSamples !== null) {
+    nodeArgs.push('--min-samples', String(args.minSamples));
+  }
+  if (args.maxChangeRatio !== undefined && args.maxChangeRatio !== null) {
+    nodeArgs.push('--max-change-ratio', String(args.maxChangeRatio));
+  }
+  if (args.windowMin !== undefined && args.windowMin !== null) {
+    nodeArgs.push('--window-min', String(args.windowMin));
+  }
+  if (args.adaptive === true) {
+    nodeArgs.push('--adaptive');
+  }
+  if (typeof args.regime === 'string' && args.regime.trim()) {
+    nodeArgs.push('--regime', args.regime.trim());
+  }
+  try {
+    const res = spawnSync(process.execPath, nodeArgs, {
+      cwd: ROOT,
+      env: process.env,
+      stdio: 'inherit'
+    });
+    if ((res.status ?? 1) !== 0) {
+      throw new Error(`tune command failed (exit=${res.status ?? 'unknown'})`);
+    }
+    console.log(runApply ? '[OK] tune applied' : '[OK] tune report generated');
+    return true;
+  } finally {
+    if (lockFd !== null) {
+      try { fs.closeSync(lockFd); } catch (_) {}
+      try { fs.rmSync(lockPath, { force: true }); } catch (_) {}
+    }
+  }
+}
+
+function applyTuneArgsToEnv(args = {}) {
+  if (typeof args.input === 'string' && args.input.trim()) process.env.HLB_TUNE_INPUT = args.input.trim();
+  if (args.minSamples !== undefined && args.minSamples !== null) process.env.HLB_TUNE_MIN_SAMPLES = String(args.minSamples);
+  if (args.maxChangeRatio !== undefined && args.maxChangeRatio !== null) process.env.HLB_TUNE_MAX_CHANGE_RATIO = String(args.maxChangeRatio);
+  if (args.windowMin !== undefined && args.windowMin !== null) process.env.HLB_TUNE_WINDOW_MIN = String(args.windowMin);
+  if (args.adaptive === true) process.env.HLB_TUNE_ADAPTIVE = '1';
+  if (typeof args.regime === 'string' && args.regime.trim()) process.env.HLB_TUNE_REGIME = args.regime.trim();
+}
+
+function runLivePreflight(strict = false) {
+  const scriptPath = path.join(ROOT, 'scripts', 'ops', 'live_preflight.js');
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error('live preflight script not found: scripts/ops/live_preflight.js');
+  }
+  const nodeArgs = [scriptPath];
+  if (strict) nodeArgs.push('--strict');
+  const res = spawnSync(process.execPath, nodeArgs, {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit'
+  });
+  return (res.status ?? 1) === 0;
+}
+
+function runLivePrepBundle() {
+  const scriptPath = path.join(ROOT, 'scripts', 'ops', 'prepare_live_cutover.sh');
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error('live prep script not found: scripts/ops/prepare_live_cutover.sh');
+  }
+  const res = spawnSync(scriptPath, {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit'
+  });
+  return (res.status ?? 1) === 0;
+}
+
+function runScript(scriptRel) {
+  const scriptPath = path.join(ROOT, scriptRel);
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`script not found: ${scriptRel}`);
+  }
+  const res = spawnSync(scriptPath, {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit'
+  });
+  return (res.status ?? 1) === 0;
+}
+
+function runHealthScan(args = {}) {
+  const scriptPath = path.join(ROOT, 'scripts', 'ops', 'trade_health_scan.js');
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error('health scan script not found: scripts/ops/trade_health_scan.js');
+  }
+  const nodeArgs = [scriptPath];
+  if (typeof args.file === 'string' && args.file.trim()) nodeArgs.push('--file', args.file.trim());
+  if (args.windowHours !== undefined && args.windowHours !== null) nodeArgs.push('--windowHours', String(args.windowHours));
+  if (args.latestRevisionOnly === true) nodeArgs.push('--latestRevisionOnly');
+  if (typeof args.sinceRevision === 'string' && args.sinceRevision.trim()) nodeArgs.push('--sinceRevision', args.sinceRevision.trim());
+  if (args.json === true) nodeArgs.push('--json');
+  const res = spawnSync(process.execPath, nodeArgs, { cwd: ROOT, env: process.env, stdio: 'inherit' });
+  return (res.status ?? 1) === 0;
+}
+
+async function waitForReady(mode) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + STATUS_TIMEOUT_MS;
+    let finished = false;
+    let lastStatus = null;
+
+    const timeoutId = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      if (!lastStatus) {
+        reject(new Error('ws-status-v1 not reachable'));
+        return;
+      }
+      const result = evaluateUpResult(lastStatus, mode);
+      reject(new Error(result.msg));
+    }, STATUS_TIMEOUT_MS);
+
+    const tryConnect = () => {
+      if (finished) return;
+      const ws = new WebSocket(WS_URL);
+
+      const cleanup = () => {
+        ws.removeAllListeners();
+        try {
+          ws.close();
+        } catch (_) {}
+      };
+
+      const retryOrFail = err => {
+        cleanup();
+        if (finished) return;
+        if (Date.now() >= deadline) {
+          finished = true;
+          clearTimeout(timeoutId);
+          if (!lastStatus) {
+            reject(new Error('ws-status-v1 not reachable'));
+            return;
+          }
+          const result = evaluateUpResult(lastStatus, mode);
+          reject(new Error(result.msg));
+          return;
+        }
+        setTimeout(tryConnect, 200);
+      };
+
+      ws.on('error', err => retryOrFail(err));
+
+      ws.on('message', data => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg?.type !== 'ws-status-v1') return;
+          lastStatus = msg;
+          const missing = msg.cores?.find(c => c?.required && c?.state !== 'loaded');
+          if (missing) {
+            cleanup();
+            if (finished) return;
+            finished = true;
+            clearTimeout(timeoutId);
+            reject(new Error(`missing required core: ${missing.id}`));
+            return;
+          }
+          if (msg.severity === 'ERROR') {
+            cleanup();
+            if (finished) return;
+            finished = true;
+            clearTimeout(timeoutId);
+            reject(new Error(`severity=ERROR: ${msg.hint ?? '-'}`));
+            return;
+          }
+          const isLiveReady = mode === 'live' && msg.state === 'STABLE' && msg.severity === 'OK';
+          const isTestReady = mode === 'test' && OK_STATES.has(msg.state);
+          const isDryReady = mode === 'dry' && OK_STATES.has(msg.state);
+          if (isLiveReady || isTestReady || isDryReady) {
+            cleanup();
+            if (finished) return;
+            finished = true;
+            clearTimeout(timeoutId);
+            resolve(msg);
+          }
+        } catch (err) {
+          retryOrFail(err);
+        }
+      });
+    };
+
+    tryConnect();
+  });
+}
+
+async function waitForProcessReady() {
+  return new Promise((resolve, reject) => {
+    const pid = readPid();
+    if (!pid || !isAlive(pid)) {
+      reject(new Error('bot process not running'));
+      return;
+    }
+
+    const startedAt = Date.now();
+    const deadline = startedAt + PROCESS_READY_TIMEOUT_MS;
+    const interval = setInterval(() => {
+      if (!isAlive(pid)) {
+        clearInterval(interval);
+        reject(new Error('bot process exited before ready'));
+        return;
+      }
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= PROCESS_READY_STABLE_MS) {
+        clearInterval(interval);
+        resolve({ pid });
+        return;
+      }
+
+      if (Date.now() >= deadline) {
+        clearInterval(interval);
+        resolve({ pid, warning: 'startup readiness timed out; process still alive' });
+      }
+    }, 200);
+  });
+}
+
+function hasMissingRequired(cores) {
+  if (!Array.isArray(cores)) return false;
+  return cores.some(c => c?.required && c?.state !== 'loaded');
+}
+
+function fmtStatus(msg) {
+  const state = msg?.state ?? 'unknown';
+  const severity = msg?.severity ?? 'unknown';
+  const hint = msg?.hint ?? '-';
+  return `${state} / ${severity} :: ${hint}`;
+}
+
+async function startProcess(envMap) {
+  const logsDir = path.join(ROOT, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const serverEntry = runtimeEntry('server');
+  const statusEntry = runtimeEntry('ws-status-v1');
+  if (!fs.existsSync(serverEntry) || !fs.existsSync(statusEntry)) {
+    throw new Error(`runtime entry not found: ${!fs.existsSync(serverEntry) ? serverEntry : statusEntry}. run \`npm run build:runtime\``);
+  }
+
+  let stdoutFd; let stderrFd; let statusStdoutFd; let statusStderrFd;
+  try {
+    stdoutFd = fs.openSync(path.join(logsDir, 'stdout.log'), 'a');
+    stderrFd = fs.openSync(path.join(logsDir, 'error.log'), 'a');
+    statusStdoutFd = fs.openSync(path.join(logsDir, 'status-stdout.log'), 'a');
+    statusStderrFd = fs.openSync(path.join(logsDir, 'status-error.log'), 'a');
+  } catch (err) {
+    throw new Error(`failed to create log streams: ${err?.message || err}`);
+  }
+
+  const child = spawn(
+    process.execPath,
+    [serverEntry],
+    {
+      cwd: ROOT,
+      env: envMap,
+      detached: true,
+      stdio: ['ignore', stdoutFd, stderrFd],
+    }
+  );
+
+  if (!child.pid) {
+    if (stdoutFd) fs.closeSync(stdoutFd);
+    if (stderrFd) fs.closeSync(stderrFd);
+    throw new Error(`failed to spawn ${serverEntry}`);
+  }
+  fs.writeFileSync(PID_FILE, String(child.pid));
+  child.unref();
+
+  const statusChild = spawn(
+    process.execPath,
+    [statusEntry],
+    {
+      cwd: ROOT,
+      env: envMap,
+      detached: true,
+      stdio: ['ignore', statusStdoutFd, statusStderrFd],
+    }
+  );
+
+  if (statusChild.pid) {
+    try {
+      fs.writeFileSync(STATUS_PID_FILE, String(statusChild.pid));
+    } catch (_) {
+      // non-fatal: status pid file write failure should not block startup
+    }
+  }
+  statusChild.unref();
+}
+
+function startTuneDaemon() {
+  const daemonEntry = path.join(ROOT, 'scripts', 'ops', 'auto_tune_daemon.js');
+  if (!fs.existsSync(daemonEntry)) {
+    throw new Error(`tune daemon script not found: ${daemonEntry}`);
+  }
+  const logsDir = path.join(ROOT, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const outFd = fs.openSync(path.join(logsDir, 'tune-stdout.log'), 'a');
+  const errFd = fs.openSync(path.join(logsDir, 'tune-error.log'), 'a');
+  const daemon = spawn(
+    process.execPath,
+    [daemonEntry],
+    {
+      cwd: ROOT,
+      env: process.env,
+      detached: true,
+      stdio: ['ignore', outFd, errFd],
+    }
+  );
+  if (!daemon.pid) {
+    try { fs.closeSync(outFd); } catch (_) {}
+    try { fs.closeSync(errFd); } catch (_) {}
+    throw new Error('failed to spawn tune daemon');
+  }
+  fs.writeFileSync(TUNE_DAEMON_PID_FILE, String(daemon.pid));
+  daemon.unref();
+}
+
+function runProfitTunerCommand(args = [], stdio = 'inherit') {
+  const tunerPath = path.join(ROOT, 'scripts', 'ops', 'profit_tuner.js');
+  if (!fs.existsSync(tunerPath)) {
+    throw new Error(`profit tuner script not found: ${tunerPath}`);
+  }
+  const res = spawnSync(process.execPath, [tunerPath, ...args], {
+    cwd: ROOT,
+    env: process.env,
+    stdio
+  });
+  return res;
+}
+
+function hasProfitTunerScript() {
+  const tunerPath = path.join(ROOT, 'scripts', 'ops', 'profit_tuner.js');
+  return fs.existsSync(tunerPath);
+}
+
+function startProfitTunerDaemon(intervalSec = 30, allowTuneDaemon = false) {
+  const tunerPath = path.join(ROOT, 'scripts', 'ops', 'profit_tuner.js');
+  if (!fs.existsSync(tunerPath)) {
+    throw new Error(`profit tuner script not found: ${tunerPath}`);
+  }
+  const logsDir = path.join(ROOT, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const outFd = fs.openSync(path.join(logsDir, 'profit_tuner.log'), 'a');
+  const errFd = fs.openSync(path.join(logsDir, 'profit_tuner.error.log'), 'a');
+  const args = [tunerPath, 'daemon', '--interval-sec', String(Math.max(5, Math.floor(intervalSec)))];
+  if (allowTuneDaemon) args.push('--allow-tune-daemon');
+  const daemon = spawn(
+    process.execPath,
+    args,
+    {
+      cwd: ROOT,
+      env: process.env,
+      detached: true,
+      stdio: ['ignore', outFd, errFd],
+    }
+  );
+  if (!daemon.pid) {
+    try { fs.closeSync(outFd); } catch (_) {}
+    try { fs.closeSync(errFd); } catch (_) {}
+    throw new Error('failed to spawn profit tuner daemon');
+  }
+  fs.writeFileSync(PROFIT_TUNER_PID_FILE, String(daemon.pid));
+  daemon.unref();
+}
+
+function evaluateUpResult(status, mode) {
+  if (!status) {
+    return { ok: false, msg: 'ws-status-v1 not reachable' };
+  }
+  const missing = status.cores?.find(c => c?.required && c?.state !== 'loaded');
+  if (missing) {
+    return { ok: false, msg: `missing required core: ${missing.id}` };
+  }
+  if (status.severity === 'ERROR') {
+    return { ok: false, msg: `severity=ERROR: ${status.hint ?? '-'}` };
+  }
+  if (mode === 'live') {
+    if (status.state !== 'STABLE' || status.severity !== 'OK') {
+      return {
+        ok: false,
+        msg: `LIVE failed: ${status.state} (${status.hint ?? '-'})`,
+      };
+    }
+  } else if (mode === 'test' || mode === 'dry') {
+    if (!OK_STATES.has(status.state)) {
+      return {
+        ok: false,
+        msg: `${mode.toUpperCase()} failed: ${status.state} (${status.hint ?? '-'})`,
+      };
+    }
+  } else {
+    return { ok: false, msg: `unknown mode: ${mode}` };
+  }
+  return { ok: true, msg: `${mode.toUpperCase()} ready (${status.state})` };
+}
+
+function findManagedPids() {
+  let output = '';
+  try {
+    output = spawnSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' }).stdout || '';
+  } catch (_) {
+    return [];
+  }
+  const pids = [];
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const cmd = m[2] || '';
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    if (isManagedTargetPath(cmd)) {
+      pids.push(pid);
+    }
+  }
+  return [...new Set(pids)];
+}
+
+function runRotateLogs() {
+  const scriptPath = path.join(ROOT, 'scripts', 'rotate_logs.sh');
+  try {
+    if (!fs.existsSync(scriptPath)) return;
+    spawnSync(scriptPath, {
+      cwd: ROOT,
+      env: process.env,
+      stdio: 'inherit',
+    });
+  } catch (_) {
+    // non-fatal: rotation failure must not block startup
+  }
+}
+
+function validateStartup() {
+  // Check 1: MODE 値チェック
+  const mode = process.env.MODE ?? 'test';
+  if (!['test', 'live', 'dry'].includes(mode)) {
+    throw new Error(`invalid MODE: ${mode}`);
+  }
+
+  // Check 2: TEST_MODE と MODE の矛盾チェック
+  const testMode = process.env.TEST_MODE ?? '0';
+  if (testMode === '0' && mode === 'test') {
+    throw new Error('CONFLICT: TEST_MODE=0 + MODE=test is not allowed');
+  }
+
+  // Check 3: ログディレクトリ確認
+  const logsDir = path.join(ROOT, 'logs');
+  const testLogsDir = path.join(ROOT, 'test-logs');
+  try {
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.mkdirSync(testLogsDir, { recursive: true });
+  } catch (err) {
+    throw new Error(`failed to create log directories: ${err.message}`);
+  }
+
+  // Check 4: SOURCE を表示
+  const tradesSource = process.env.LOG_TRADES_PATH || (
+    mode === 'live'
+      ? path.join(ROOT, 'logs', 'trades.jsonl')
+      : path.join(ROOT, 'test-logs', 'trades.jsonl')
+  );
+  console.log(`[INFO] TRADES SOURCE: ${tradesSource}`);
+}
+
+function printStartupStatus(mode, wsStatus) {
+  const testMode = process.env.TEST_MODE ?? '0';
+  const tradesSourceRaw = process.env.LOG_TRADES_PATH || (
+    mode === 'live'
+      ? path.join(ROOT, 'logs', 'trades.jsonl')
+      : path.join(ROOT, 'test-logs', 'trades.jsonl')
+  );
+  const state = String(wsStatus?.state ?? 'unknown').toUpperCase();
+
+  const sourceDisplay = (() => {
+    try {
+      const rel = path.relative(ROOT, tradesSourceRaw);
+      if (!rel || rel.startsWith('..')) return tradesSourceRaw;
+      return rel;
+    } catch (_) {
+      return tradesSourceRaw;
+    }
+  })();
+
+  const WIDTH = 54;
+  const TITLE = 'HLWS-BOT STARTUP COMPLETE';
+  const fit = (s, width) => {
+    const text = String(s ?? '');
+    if (text.length <= width) return text.padEnd(width, ' ');
+    if (width <= 3) return '.'.repeat(width);
+    return `${text.slice(0, width - 3)}...`;
+  };
+  const line = (label, value = '') => {
+    const body = `${label}: ${value}`;
+    return `| ${fit(body, WIDTH - 4)} |`;
+  };
+
+  console.log([
+    `+${'-'.repeat(WIDTH - 2)}+`,
+    `| ${fit(TITLE, WIDTH - 4)} |`,
+    `+${'-'.repeat(WIDTH - 2)}+`,
+    line('MODE', mode.toUpperCase()),
+    line('TEST_MODE', testMode),
+    line('WS_STATE', state),
+    line('SOURCE', sourceDisplay),
+    line('READY', 'YES'),
+    `+${'-'.repeat(WIDTH - 2)}+`
+  ].join('\n'));
+}
+
+async function doUp(isDry, upArgs = {}) {
+  const mode = isDry ? 'dry' : (process.env.MODE ?? 'test');
+  applyTuneArgsToEnv(upArgs);
+
+  // 起動時に MODE を明示的に固定
+  process.env.MODE = mode;
+  if (!process.env.TEST_MODE) {
+    process.env.TEST_MODE = mode === 'live' ? '0' : '1';
+  }
+
+  // Startup checks
+  try {
+    validateStartup();
+  } catch (err) {
+    console.error(`[ERROR] Startup validation failed: ${err.message}`);
+    process.exit(1);
+  }
+  
+  const existingPid = readPid();
+  const existingStatusPid = readStatusPid();
+  const existingTuneDaemonPid = readTuneDaemonPid();
+  if (existingPid && isAlive(existingPid)) {
+    console.error(`[ERROR] already running (pid=${existingPid})`);
+    process.exit(1);
+  }
+  if (existingStatusPid && isAlive(existingStatusPid)) {
+    console.error(`[ERROR] status process already running (pid=${existingStatusPid})`);
+    process.exit(1);
+  }
+  if (existingTuneDaemonPid && !isAlive(existingTuneDaemonPid)) {
+    fs.rmSync(TUNE_DAEMON_PID_FILE, { force: true });
+  }
+  const managedPids = findManagedPids();
+  if (managedPids.length > 0) {
+    const pm2Stopped = stopPm2ManagedTargets();
+    if (pm2Stopped.length > 0) {
+      await new Promise(res => setTimeout(res, 500));
+    }
+    let cleaned = false;
+    for (const pid of findManagedPids()) {
+      const ok = await stopPid(pid);
+      cleaned = cleaned || ok;
+    }
+    const remaining = findManagedPids();
+    if (remaining.length > 0) {
+      console.error(`[ERROR] managed process still running without pid file: ${remaining.join(', ')}`);
+      console.error('[HINT] run `hlb down` and retry');
+      process.exit(1);
+    }
+    if (cleaned) {
+      console.log('[WARN] cleaned stale managed process before startup');
+    }
+  }
+  runRotateLogs();
+  await startProcess(modeEnv(mode));
+  try {
+    const readiness = await waitForProcessReady();
+    if (readiness?.warning) {
+      console.error(`[WARN] ${readiness.warning}`);
+    }
+    if (mode === 'dry') {
+      console.log('[INFO] dry mode: skip ws-status ready wait');
+      printStartupStatus(mode, { state: 'SKIPPED' });
+      return;
+    }
+
+    const wsStatus = await waitForReady(mode);
+
+    // Print comprehensive startup status
+    printStartupStatus(mode, wsStatus);
+
+    const envTuneFlag = String(process.env.HLB_TUNE_ON_UP ?? '').trim().toLowerCase();
+    const tuneOnUpByEnv = envTuneFlag === '' ? null : (envTuneFlag === '1' || envTuneFlag === 'true');
+    // default OFF: 明示 --tune もしくは HLB_TUNE_ON_UP=1 のときのみ実行
+    const tuneOnUp = tuneOnUpByEnv === null
+      ? (upArgs?.tune === true && upArgs?.noTune !== true)
+      : (tuneOnUpByEnv && upArgs?.noTune !== true);
+    if (tuneOnUp && !isDry) {
+      console.log('[INFO] running tune on startup...');
+      try {
+        doTune({
+          apply: upArgs.apply,
+          input: upArgs.input,
+          minSamples: upArgs.minSamples,
+          maxChangeRatio: upArgs.maxChangeRatio,
+          windowMin: upArgs.windowMin,
+          adaptive: upArgs.adaptive === true,
+          regime: upArgs.regime
+        });
+      } catch (tuneErr) {
+        console.error(`[WARN] tune on startup failed: ${tuneErr?.message ?? tuneErr}`);
+      }
+    }
+    const envTuneDaemonFlag = String(process.env.HLB_TUNE_DAEMON_ON_UP ?? '').trim().toLowerCase();
+    const tuneDaemonOnUpByEnv = envTuneDaemonFlag === '' ? null : (envTuneDaemonFlag === '1' || envTuneDaemonFlag === 'true');
+    // default OFF: HLB_TUNE_DAEMON_ON_UP=1 のときのみ起動
+    const tuneDaemonOnUp = tuneDaemonOnUpByEnv === null
+      ? false
+      : (tuneDaemonOnUpByEnv && upArgs?.noTuneDaemon !== true);
+    if (tuneDaemonOnUp && !isDry) {
+      const runningTuneDaemonPid = readTuneDaemonPid();
+      if (runningTuneDaemonPid && isAlive(runningTuneDaemonPid)) {
+        console.log(`[INFO] tune daemon already running (pid=${runningTuneDaemonPid})`);
+      } else {
+        try {
+          startTuneDaemon();
+          console.log('[OK] tune daemon started');
+        } catch (daemonErr) {
+          console.error(`[WARN] tune daemon start failed: ${daemonErr?.message ?? daemonErr}`);
+        }
+      }
+    }
+  } catch (err) {
+    await stopProcess();
+    await stopStatusProcess();
+    await stopTuneDaemonProcess();
+    console.error(`[ERROR] ${err.message}`);
+    process.exit(1);
+  }
+}
+
+async function main() {
+  const args = minimist(process.argv.slice(2), {
+    boolean: ['d', 'apply', 'adaptive', 'tune', 'no-tune', 'no-tune-daemon', 'send-orders', 'strict', 'force', 'no-backup', 'dry-run', 'allow-tune-daemon', 'restore-baseline'],
+    string: ['input', 'min-samples', 'max-change-ratio', 'window-min', 'regime', 'file', 'window-hours', 'since-revision', 'reason', 'keep-reset', 'keep-baseline', 'keep-kpi-days', 'max-log-mb', 'keep-marker-lines', 'every-min', 'raw', 'trades', 'interval-sec'],
+    default: {
+      apply: true
+    }
+  });
+  const cmd = args._[0];
+  const isDry = args.d === true;
+
+  if (!cmd) usage();
+
+  if (cmd === 'up') {
+    const upProfile = String(args._[1] ?? '').toLowerCase();
+    let upIsDry = isDry;
+    if (upProfile) {
+      if (!['test', 'live', 'dry'].includes(upProfile)) {
+        console.error(`[ERROR] invalid up profile: ${upProfile} (use test|live|dry)`);
+        process.exit(1);
+      }
+      if (upProfile === 'dry') {
+        upIsDry = true;
+      } else if (upProfile === 'live') {
+        process.env.MODE = 'live';
+        process.env.TEST_MODE = '0';
+      } else if (upProfile === 'test') {
+        // ユーザー定義: テストルートは LIVE1 + TEST1
+        process.env.MODE = 'live';
+        process.env.TEST_MODE = '1';
+        process.env.LOG_TRADES_PATH = path.join(ROOT, 'test-logs', 'trades.jsonl');
+      }
+    }
+    await doUp(upIsDry, {
+      tune: args.tune === true,
+      noTune: args['no-tune'] === true,
+      noTuneDaemon: args['no-tune-daemon'] === true,
+      apply: args.apply,
+      input: args.input,
+      minSamples: args['min-samples'],
+      maxChangeRatio: args['max-change-ratio'],
+      windowMin: args['window-min'],
+      adaptive: args.adaptive === true,
+      regime: args.regime
+    });
+    return;
+  }
+
+  if (cmd === 'up-live') {
+    if (args['send-orders'] === true && process.env.HLB_CONFIRM_LIVE !== '1') {
+      console.error('[SAFE GUARD] send-orders is blocked by default.');
+      console.error('[SAFE GUARD] Set HLB_CONFIRM_LIVE=1 explicitly for this command.');
+      console.error('[SAFE GUARD] Example: HLB_CONFIRM_LIVE=1 hlb up-live --send-orders');
+      process.exit(1);
+    }
+    process.env.MODE = 'live';
+    process.env.TEST_MODE = '0';
+    process.env.DRY_RUN = args['send-orders'] === true ? '0' : '1';
+    console.log(`[INFO] live profile: MODE=live TEST_MODE=0 DRY_RUN=${process.env.DRY_RUN}`);
+    const preflightOk = runLivePreflight(args['send-orders'] === true || args.strict === true);
+    if (!preflightOk) {
+      console.error('[ERROR] live preflight failed');
+      process.exit(1);
+    }
+    await doUp(false, {
+      tune: args.tune === true,
+      noTune: args['no-tune'] === true,
+      noTuneDaemon: args['no-tune-daemon'] === true,
+      apply: args.apply,
+      input: args.input,
+      minSamples: args['min-samples'],
+      maxChangeRatio: args['max-change-ratio'],
+      windowMin: args['window-min'],
+      adaptive: args.adaptive === true,
+      regime: args.regime
+    });
+    return;
+  }
+
+  if (cmd === 'live-preflight') {
+    const ok = runLivePreflight(args.strict === true);
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'prep-live') {
+    const ok = runLivePrepBundle();
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'signer-setup') {
+    const ok = runScript('scripts/ops/setup_signer_service.sh');
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'signer-start') {
+    const ok = runScript('scripts/ops/start_signer_service.sh');
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'signer-stop') {
+    const ok = runScript('scripts/ops/stop_signer_service.sh');
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'tune-daemon-start') {
+    const pid = readTuneDaemonPid();
+    if (pid && isAlive(pid)) {
+      console.log(`[INFO] tune daemon already running (pid=${pid})`);
+      return;
+    }
+    if (pid && !isAlive(pid)) fs.rmSync(TUNE_DAEMON_PID_FILE, { force: true });
+    startTuneDaemon();
+    console.log('[OK] tune daemon started');
+    return;
+  }
+
+  if (cmd === 'tune-daemon-stop') {
+    const stopped = await stopTuneDaemonProcess();
+    console.log(stopped ? '[OK] tune daemon stopped' : '[INFO] tune daemon already stopped');
+    return;
+  }
+
+  if (cmd === 'tune-daemon-status') {
+    const pid = readTuneDaemonPid();
+    if (!pid) {
+      console.log('stopped');
+      return;
+    }
+    if (isAlive(pid)) {
+      console.log(`running pid=${pid}`);
+      return;
+    }
+    fs.rmSync(TUNE_DAEMON_PID_FILE, { force: true });
+    console.log('stopped');
+    return;
+  }
+
+  if (cmd === 'profit-tune-start') {
+    if (!hasProfitTunerScript()) {
+      fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+      console.log('[INFO] profit tuner archived/disabled');
+      return;
+    }
+    const pidFromFile = readProfitTunerPid();
+    const runningPids = findProfitTunerPids();
+    const pid = (pidFromFile && isAlive(pidFromFile)) ? pidFromFile : (runningPids[0] ?? null);
+    if (pid) {
+      try { fs.writeFileSync(PROFIT_TUNER_PID_FILE, String(pid)); } catch (_) {}
+      console.log(`[INFO] profit tuner already running (pid=${pid})`);
+      return;
+    }
+    fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+    const intervalSecRaw = Number(args['interval-sec']);
+    const intervalSec = Number.isFinite(intervalSecRaw) ? intervalSecRaw : 30;
+    startProfitTunerDaemon(intervalSec, args['allow-tune-daemon'] === true);
+    console.log('[OK] profit tuner started');
+    return;
+  }
+
+  if (cmd === 'profit-tune-stop') {
+    const stopped = await stopProfitTunerProcess();
+    console.log(stopped ? '[OK] profit tuner stopped' : '[INFO] profit tuner already stopped');
+    return;
+  }
+
+  if (cmd === 'profit-tune-status') {
+    if (!hasProfitTunerScript()) {
+      fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+      console.log(JSON.stringify({
+        at: new Date().toISOString(),
+        tradesCount: 0,
+        state: null,
+        best: null,
+        archived: true
+      }, null, 2));
+      return;
+    }
+    const pidFromFile = readProfitTunerPid();
+    const runningPids = findProfitTunerPids();
+    const pid = (pidFromFile && isAlive(pidFromFile)) ? pidFromFile : (runningPids[0] ?? null);
+    if (pid) {
+      try { fs.writeFileSync(PROFIT_TUNER_PID_FILE, String(pid)); } catch (_) {}
+    } else {
+      fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+    }
+    const res = runProfitTunerCommand(['status'], 'inherit');
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'profit-tune-tick') {
+    if (!hasProfitTunerScript()) {
+      console.log('[INFO] profit tuner archived/disabled');
+      return;
+    }
+    const tickArgs = ['tick'];
+    if (args['allow-tune-daemon'] === true) tickArgs.push('--allow-tune-daemon');
+    const res = runProfitTunerCommand(tickArgs, 'inherit');
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'profit-tune-reset') {
+    if (!hasProfitTunerScript()) {
+      fs.rmSync(PROFIT_TUNER_PID_FILE, { force: true });
+      console.log('[INFO] profit tuner archived/disabled');
+      return;
+    }
+    const resetArgs = ['reset'];
+    if (args['restore-baseline'] === true) resetArgs.push('--restore-baseline');
+    const res = runProfitTunerCommand(resetArgs, 'inherit');
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'health-scan') {
+    const ok = runHealthScan({
+      file: args.file,
+      windowHours: args['window-hours'],
+      latestRevisionOnly: args['latest-revision-only'] === true,
+      sinceRevision: args['since-revision'],
+      json: args.json === true
+    });
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (cmd === 'kpi-mail') {
+    const script = path.join(ROOT, 'scripts', 'send_kpi_alert_report.sh');
+    const spawnArgs = [script];
+    if (args.raw) spawnArgs.push(String(args.raw));
+    if (args.trades) spawnArgs.push(String(args.trades));
+    const env = { ...process.env };
+    if (args['dry-run'] === true) env.KPI_MAIL_DRY_RUN = '1';
+    const res = spawnSync('bash', spawnArgs, { stdio: 'inherit', cwd: ROOT, env });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'kpi-mail-install') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'install_kpi_mail_cron.sh');
+    const spawnArgs = [script];
+    if (args['every-min']) {
+      spawnArgs.push('--every-min');
+      spawnArgs.push(String(args['every-min']));
+    }
+    const res = spawnSync('bash', spawnArgs, { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'kpi-mail-uninstall') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'uninstall_kpi_mail_cron.sh');
+    const res = spawnSync('bash', [script], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'reset-logs') {
+    const script = path.join(ROOT, 'scripts', 'reset_logs.sh');
+    const spawnArgs = [];
+    if (args.force === true) spawnArgs.push('--force');
+    if (args.reason) {
+      spawnArgs.push('--reason');
+      spawnArgs.push(String(args.reason));
+    }
+    if (args['no-backup'] === true) spawnArgs.push('--no-backup');
+    const res = spawnSync('bash', [script, ...spawnArgs], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'prune-logs') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'prune_logs.sh');
+    const spawnArgs = [];
+    if (args['keep-reset']) {
+      spawnArgs.push('--keep-reset');
+      spawnArgs.push(String(args['keep-reset']));
+    }
+    if (args['keep-baseline']) {
+      spawnArgs.push('--keep-baseline');
+      spawnArgs.push(String(args['keep-baseline']));
+    }
+    if (args['keep-kpi-days']) {
+      spawnArgs.push('--keep-kpi-days');
+      spawnArgs.push(String(args['keep-kpi-days']));
+    }
+    const res = spawnSync('bash', [script, ...spawnArgs], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'log-maintenance') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'log_maintenance.sh');
+    const spawnArgs = [];
+    if (args['max-log-mb']) {
+      spawnArgs.push('--max-log-mb');
+      spawnArgs.push(String(args['max-log-mb']));
+    }
+    if (args['keep-marker-lines']) {
+      spawnArgs.push('--keep-marker-lines');
+      spawnArgs.push(String(args['keep-marker-lines']));
+    }
+    if (args['keep-reset']) {
+      spawnArgs.push('--keep-reset');
+      spawnArgs.push(String(args['keep-reset']));
+    }
+    if (args['keep-baseline']) {
+      spawnArgs.push('--keep-baseline');
+      spawnArgs.push(String(args['keep-baseline']));
+    }
+    if (args['keep-kpi-days']) {
+      spawnArgs.push('--keep-kpi-days');
+      spawnArgs.push(String(args['keep-kpi-days']));
+    }
+    const res = spawnSync('bash', [script, ...spawnArgs], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'log-maintenance-install') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'install_log_maintenance_cron.sh');
+    const spawnArgs = [];
+    if (args['every-min']) {
+      spawnArgs.push('--every-min');
+      spawnArgs.push(String(args['every-min']));
+    }
+    const res = spawnSync('bash', [script, ...spawnArgs], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'log-maintenance-uninstall') {
+    const script = path.join(ROOT, 'scripts', 'ops', 'uninstall_log_maintenance_cron.sh');
+    const res = spawnSync('bash', [script], { stdio: 'inherit', cwd: ROOT });
+    if ((res.status ?? 1) !== 0) process.exit(res.status ?? 1);
+    return;
+  }
+
+  if (cmd === 'down') {
+    await doDown({ force: args.force === true });
+    return;
+  }
+
+  if (cmd === 'tune') {
+    try {
+      doTune({
+        apply: args.apply,
+        input: args.input,
+        minSamples: args['min-samples'],
+        maxChangeRatio: args['max-change-ratio'],
+        windowMin: args['window-min'],
+        adaptive: args.adaptive === true,
+        regime: args.regime
+      });
+    } catch (err) {
+      console.error(`[ERROR] ${err?.message ?? err}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  usage();
+}
+
+main().catch(err => {
+  console.error(`[ERROR] ${err.message}`);
+  process.exit(1);
+});

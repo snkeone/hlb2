@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVER_PID_FILE="$ROOT/ws/.manual-server.pid"
+STATUS_PID_FILE="$ROOT/ws/.manual-status.pid"
+
+start() {
+  mkdir -p "$ROOT/logs" "$ROOT/test-logs" "$ROOT/ws"
+
+  "$ROOT/bin/hlb" down --force >/dev/null 2>&1 || true
+  pkill -f "$ROOT/ws/server.js" >/dev/null 2>&1 || true
+  pkill -f "$ROOT/ws/ws-status-v1.js" >/dev/null 2>&1 || true
+
+  env \
+    MODE=live \
+    TEST_MODE=1 \
+    DRY_RUN=0 \
+    LOG_TRADES_PATH="$ROOT/test-logs/trades.jsonl" \
+    node "$ROOT/ws/server.js" >> "$ROOT/logs/stdout.log" 2>> "$ROOT/logs/error.log" &
+  echo $! > "$SERVER_PID_FILE"
+
+  env \
+    MODE=live \
+    TEST_MODE=1 \
+    DRY_RUN=0 \
+    LOG_TRADES_PATH="$ROOT/test-logs/trades.jsonl" \
+    node "$ROOT/ws/ws-status-v1.js" >> "$ROOT/logs/status-stdout.log" 2>> "$ROOT/logs/status-error.log" &
+  echo $! > "$STATUS_PID_FILE"
+
+  sleep 1
+  status
+}
+
+stop() {
+  "$ROOT/bin/hlb" down --force || true
+  rm -f "$SERVER_PID_FILE" "$STATUS_PID_FILE"
+}
+
+status() {
+  local pids=()
+  if [[ -f "$SERVER_PID_FILE" ]]; then
+    pids+=("$(cat "$SERVER_PID_FILE" 2>/dev/null || true)")
+  fi
+  if [[ -f "$STATUS_PID_FILE" ]]; then
+    pids+=("$(cat "$STATUS_PID_FILE" 2>/dev/null || true)")
+  fi
+
+  echo "[hlb-live-test] target: MODE=live TEST_MODE=1 DRY_RUN=0 LOG_TRADES_PATH=test-logs/trades.jsonl"
+  for p in "${pids[@]}"; do
+    if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
+      echo "[ok] pid=$p running"
+      tr '\0' '\n' < "/proc/$p/environ" | grep -E '^(MODE|TEST_MODE|DRY_RUN|LOG_TRADES_PATH)=' || true
+    elif [[ -n "$p" ]]; then
+      echo "[ng] pid=$p not running"
+    fi
+  done
+  ps -eo pid,cmd | grep -E 'node .*/ws/(server|ws-status-v1)\.js' | grep -v grep || true
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop) stop ;;
+  status) status ;;
+  *)
+    echo "usage: $(basename "$0") [start|stop|status]"
+    exit 1
+    ;;
+esac

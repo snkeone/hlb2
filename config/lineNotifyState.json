@@ -1,0 +1,23 @@
+{
+  "version": "1.1",
+  "lastRecordedWinRate": 25,
+  "lastNotifiedAt": {
+    "50": 1770044642091,
+    "52": null,
+    "55": 1770044538053
+  },
+  "monthlyNotificationCount": 95,
+  "currentWinRate": 25,
+  "lastUpdateTimestamp": "2026-02-15T09:05:13.519Z",
+  "currentMonth": "2026-02",
+  "limitReachedNotified": true,
+  "lastDailyMorningSentAt": 1770156000000,
+  "lastDailyEveningSentAt": 1770026400000,
+  "lastWeeklySentAt": null,
+  "alertCooldowns": {
+    "TEST": 1770712834740,
+    "UNHANDLED_EXCEPTION": 1770913614308,
+    "WS_DISCONNECTED": 1770447864020,
+    "ENTRY_RATE_LOW": 1771146313360
+  }
+}

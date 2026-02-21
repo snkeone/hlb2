@@ -1,0 +1,57 @@
+{
+  "name": "hlws-bot",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "HL WebSocket BOT workspace",
+  "license": "MIT",
+  "bin": {
+    "hlb": "./bin/hlb"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "build": "tsc",
+    "build:runtime": "bash scripts/ops/build_runtime_dist.sh",
+    "build:watch": "tsc --watch",
+    "test:ws": "node tests/ws-index-test-runner.js",
+    "ws:run": "node tests/ws-index-run.js",
+    "stale:check": "node tests/stale-test.js",
+    "logic:log": "node tests/logic-log-run.js",
+    "ops:sync": "bash scripts/ops/sync_dual_source.sh",
+    "ops:drift": "bash scripts/ops/report_dual_source_drift.sh",
+    "ops:tune": "node scripts/ops/auto_tune_from_logs.js",
+    "ops:tune:apply": "bash scripts/ops/daily_auto_tune.sh",
+    "ops:replay": "node scripts/ops/counterfactual_replay.js",
+    "ops:replay:apply": "node scripts/ops/counterfactual_replay.js --apply",
+    "v2:ws:viz": "node scripts/ws_pressure_visualize.js",
+    "v2:eval:truth": "node scripts/validation/ws_event_truth_eval.js",
+    "v2:eval:judge": "node scripts/validation/judge_validation_results.js",
+    "v2:window:files": "node scripts/ops/select_window_files.js",
+    "v2:logs:retention": "bash scripts/ops/log_retention.sh",
+    "v2:run:cycle": "bash scripts/ops/run_validation_cycle.sh",
+    "depcruise:b2:local": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
+    "dep:check:b2hub": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
+    "test": "NODE_OPTIONS=--experimental-vm-modules LOG_TRADES_PATH=test-logs/jest/trades.jsonl jest",
+    "test:normalize": "jest tests/normalize-"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "chalk": "^4.1.2",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.16.0",
+    "eventemitter3": "^5.0.1",
+    "minimist": "^1.2.8",
+    "node-fetch": "^3.3.2",
+    "uuid": "^11.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.28.5",
+    "babel-jest": "^30.2.0",
+    "dependency-cruiser": "^17.3.8",
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.7",
+    "typescript": "^5.9.3"
+  }
+}
