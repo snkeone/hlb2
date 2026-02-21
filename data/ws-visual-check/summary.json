@@ -1,0 +1,31 @@
+{
+  "input": "/home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz",
+  "output": {
+    "csv": "/home/hlws/hlb2/data/ws-visual-check/feature_timeseries.csv",
+    "summary": "/home/hlws/hlb2/data/ws-visual-check/summary.json"
+  },
+  "params": {
+    "sampleMs": 250,
+    "maxLines": 20000,
+    "maxDistanceUsd": 200,
+    "minMoveUsd": 20,
+    "minPressureUsd": 250000,
+    "minWallUsd": 150000,
+    "imbThreshold": 0.12,
+    "trendWindow": 120,
+    "burstWindowMs": 3000
+  },
+  "counts": {
+    "linesRead": 20001,
+    "orderbookEvents": 774,
+    "tradeEvents": 2076,
+    "malformed": 0,
+    "sampledRows": 774,
+    "longHints": 86,
+    "shortHints": 104
+  },
+  "averages": {
+    "spreadBps": 0.5312959110738381,
+    "absPressureImbalance": 0.6110987692854434
+  }
+}

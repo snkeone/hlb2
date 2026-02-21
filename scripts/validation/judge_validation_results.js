@@ -57,7 +57,7 @@ function main() {
   const argv = minimist(process.argv.slice(2), {
     string: ['run-dir'],
     default: {
-      'run-dir': '/home/hlws/hlb2/data/validation/run-sample2',
+      'run-dir': '/home/hlws/hlb2/data/validation/run-latest',
       'min-count': 300,
       'min-count-final': 1000,
       'min-delta-p-pos': 0.02,

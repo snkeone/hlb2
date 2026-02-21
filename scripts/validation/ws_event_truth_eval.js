@@ -4,6 +4,7 @@ import path from 'path';
 import zlib from 'zlib';
 import readline from 'readline';
 import minimist from 'minimist';
+import { Worker } from 'worker_threads';
 
 function toNum(v) {
   const n = Number(v);
@@ -38,6 +39,7 @@ function calcSidePressure(levels, mid, side, maxDistanceUsd) {
   let near = 0;
   let strongestUsd = 0;
   let strongestDist = null;
+  let strongestPx = null;
   for (const lv of levels) {
     const p = levelToUsd(lv);
     if (!p) continue;
@@ -48,9 +50,48 @@ function calcSidePressure(levels, mid, side, maxDistanceUsd) {
     if (p.usd > strongestUsd) {
       strongestUsd = p.usd;
       strongestDist = dist;
+      strongestPx = p.px;
     }
   }
-  return { total, near, strongestUsd, strongestDist };
+  return { total, near, strongestUsd, strongestDist, strongestPx };
+}
+
+function updateWalls(levels, ts, minWallUsd, map) {
+  const currentPx = new Set();
+  for (const lv of levels) {
+    const p = levelToUsd(lv);
+    if (!p) continue;
+    currentPx.add(p.px);
+
+    let w = map.get(p.px);
+    if (!w && p.usd >= minWallUsd) {
+      w = { appearTs: ts, maxUsd: p.usd, halfLifeMs: null };
+      map.set(p.px, w);
+    } else if (w) {
+      if (p.usd > w.maxUsd) w.maxUsd = p.usd;
+      if (w.halfLifeMs === null && p.usd <= w.maxUsd * 0.5) {
+        w.halfLifeMs = ts - w.appearTs;
+      }
+    }
+  }
+
+  for (const [px, w] of map.entries()) {
+    if (!currentPx.has(px)) {
+      if (w.halfLifeMs === null) {
+        w.halfLifeMs = ts - w.appearTs;
+      }
+      if (ts - w.appearTs > 300000) {
+        map.delete(px);
+      }
+    }
+  }
+}
+
+function getWallHalfLife(px, ts, map) {
+  if (!px) return 0;
+  const w = map.get(px);
+  if (!w) return 0;
+  return w.halfLifeMs !== null ? w.halfLifeMs : (ts - w.appearTs);
 }
 
 function binarySearchFirstTs(arr, ts) {
@@ -249,6 +290,56 @@ function writeCsv(filePath, headers, rows) {
   fs.writeFileSync(filePath, `${out.join('\n')}\n`, 'utf8');
 }
 
+function computePessimisticBatchSync({ jobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps }) {
+  return jobs.map((j) => {
+    const burstUsd1s = sumBurstUsd1sAt(trades, tradeCumUsd, j.entryTs);
+    const dynSlipBps = calcDynamicSlipBps(j.spreadBps, j.pressureImb, burstUsd1s);
+    const move30Pes = applyDynamicSlipToMove(j.move30, j.entryMid, dynSlipBps);
+    const net30Pes = netUsdFromMove(move30Pes, j.entryMid, notionalUsd, takerBps);
+    const maker = checkMakerFill({
+      midSeries,
+      trades,
+      entryTs: j.entryTs,
+      entryMid: j.entryMid,
+      side: j.side
+    });
+    return {
+      index: j.index,
+      burstUsd1s,
+      dynSlipBps,
+      net30Pes,
+      makerFilled: maker.makerFilled
+    };
+  });
+}
+
+async function runWorkerPessimisticBatch({
+  jobs,
+  midSeries,
+  trades,
+  tradeCumUsd,
+  notionalUsd,
+  takerBps
+}) {
+  const workerPath = new URL('./eval_feature_worker.js', import.meta.url);
+  const worker = new Worker(workerPath, {
+    workerData: { midSeries, trades, tradeCumUsd, notionalUsd, takerBps }
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const onMessage = (msg) => {
+        if (msg?.type === 'ok') resolve(msg.results || []);
+        else reject(new Error(msg?.error || 'worker_failed'));
+      };
+      worker.once('message', onMessage);
+      worker.once('error', reject);
+      worker.postMessage({ type: 'compute', jobs });
+    });
+  } finally {
+    await worker.terminate();
+  }
+}
+
 async function main() {
   const argv = minimist(process.argv.slice(2), {
     string: ['input', 'out-dir'],
@@ -260,12 +351,14 @@ async function main() {
       'max-distance-usd': 200,
       'wall-appear-usd': 250000,
       'wall-disappear-drop-ratio': 0.6,
+      'min-wall-usd': 150000,
       'imb-jump-threshold': 0.2,
       'burst-usd-1s': 120000,
       'spread-jump-bps': 0.25,
       'cluster-ms': 1000,
       'notional-usd': 1000,
       'taker-bps': 4.5,
+      'eval-worker': 0,
       seed: 42
     }
   });
@@ -277,12 +370,14 @@ async function main() {
   const maxDistanceUsd = Number(argv['max-distance-usd']);
   const wallAppearUsd = Number(argv['wall-appear-usd']);
   const wallDisappearDropRatio = Number(argv['wall-disappear-drop-ratio']);
+  const minWallUsd = Number(argv['min-wall-usd']);
   const imbJumpThreshold = Number(argv['imb-jump-threshold']);
   const burstUsd1s = Number(argv['burst-usd-1s']);
   const spreadJumpBps = Number(argv['spread-jump-bps']);
   const clusterMs = Number(argv['cluster-ms']);
   const notionalUsd = Number(argv['notional-usd']);
   const takerBps = Number(argv['taker-bps']);
+  const evalWorker = Number(argv['eval-worker']) === 1;
   const seed = Number(argv.seed);
 
   ensureDir(outDir);
@@ -292,6 +387,8 @@ async function main() {
   const trades = [];
   const tradeSec = new Map();
   const rawEvents = [];
+  const bidWallMap = new Map();
+  const askWallMap = new Map();
 
   let lineCount = 0;
   let malformed = 0;
@@ -355,6 +452,9 @@ async function main() {
     const total = bid.total + ask.total;
     const imb = total > 0 ? (bid.total - ask.total) / total : 0;
 
+    updateWalls(parsed.bids, ts, minWallUsd, bidWallMap);
+    updateWalls(parsed.asks, ts, minWallUsd, askWallMap);
+
     midSeries.push({ ts, mid, spreadBps, bidNearUsd: bid.near, askNearUsd: ask.near });
 
     const oneSecFrom = ts - 1000;
@@ -385,23 +485,23 @@ async function main() {
 
       const bidWallAppear = bid.strongestUsd >= wallAppearUsd && bid.strongestUsd > prevFrame.bidStrongestUsd;
       if (bidWallAppear) {
-        rawEvents.push({ ts, type: 'wall_appear', side: 'LONG', score: bid.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: bid.strongestUsd, dist: bid.strongestDist } });
+        rawEvents.push({ ts, type: 'wall_appear', side: 'LONG', score: bid.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: bid.strongestUsd, dist: bid.strongestDist, halfLifeMs: getWallHalfLife(bid.strongestPx, ts, bidWallMap) } });
       }
       const askWallAppear = ask.strongestUsd >= wallAppearUsd && ask.strongestUsd > prevFrame.askStrongestUsd;
       if (askWallAppear) {
-        rawEvents.push({ ts, type: 'wall_appear', side: 'SHORT', score: ask.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: ask.strongestUsd, dist: ask.strongestDist } });
+        rawEvents.push({ ts, type: 'wall_appear', side: 'SHORT', score: ask.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: ask.strongestUsd, dist: ask.strongestDist, halfLifeMs: getWallHalfLife(ask.strongestPx, ts, askWallMap) } });
       }
 
       if (prevFrame.bidStrongestUsd > 0) {
         const drop = (prevFrame.bidStrongestUsd - bid.strongestUsd) / prevFrame.bidStrongestUsd;
         if (drop >= wallDisappearDropRatio) {
-          rawEvents.push({ ts, type: 'wall_disappear', side: 'SHORT', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop } });
+          rawEvents.push({ ts, type: 'wall_disappear', side: 'SHORT', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.bidStrongestPx, ts, bidWallMap) } });
         }
       }
       if (prevFrame.askStrongestUsd > 0) {
         const drop = (prevFrame.askStrongestUsd - ask.strongestUsd) / prevFrame.askStrongestUsd;
         if (drop >= wallDisappearDropRatio) {
-          rawEvents.push({ ts, type: 'wall_disappear', side: 'LONG', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop } });
+          rawEvents.push({ ts, type: 'wall_disappear', side: 'LONG', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.askStrongestPx, ts, askWallMap) } });
         }
       }
 
@@ -430,7 +530,9 @@ async function main() {
       spreadBps,
       imb,
       bidStrongestUsd: bid.strongestUsd,
-      askStrongestUsd: ask.strongestUsd
+      askStrongestUsd: ask.strongestUsd,
+      bidStrongestPx: bid.strongestPx,
+      askStrongestPx: ask.strongestPx
     };
   }
 
@@ -454,6 +556,7 @@ async function main() {
     tradeCumUsd.push(tradeCumUsd[i] + trades[i].usd);
   }
   const labeled = [];
+  const pessimisticJobs = [];
   for (const e of events) {
     const idx = binarySearchFirstTs(midSeries, e.ts);
     if (idx >= midSeries.length) continue;
@@ -467,16 +570,15 @@ async function main() {
 
     const net30 = netUsdFromMove(l30.move, midSeries[idx].mid, notionalUsd, takerBps);
     const net60 = netUsdFromMove(l60.move, midSeries[idx].mid, notionalUsd, takerBps);
-    const burstUsd1s = sumBurstUsd1sAt(trades, tradeCumUsd, e.ts);
-    const dynSlipBps = calcDynamicSlipBps(e.spreadBps, e.pressureImb, burstUsd1s);
-    const move30Pes = applyDynamicSlipToMove(l30.move, midSeries[idx].mid, dynSlipBps);
-    const net30Pes = netUsdFromMove(move30Pes, midSeries[idx].mid, notionalUsd, takerBps);
-    const maker = checkMakerFill({
-      midSeries,
-      trades,
+    const rowIndex = labeled.length;
+    pessimisticJobs.push({
+      index: rowIndex,
       entryTs: e.ts,
       entryMid: midSeries[idx].mid,
-      side: e.side
+      side: e.side,
+      spreadBps: e.spreadBps,
+      pressureImb: e.pressureImb,
+      move30: l30.move
     });
 
     labeled.push({
@@ -488,6 +590,7 @@ async function main() {
       spreadBps: e.spreadBps,
       pressureImb: e.pressureImb,
       score: e.score,
+      halfLifeMs: e.extra?.halfLifeMs ?? null,
       move5: l5 ? l5.move : null,
       move15: l15 ? l15.move : null,
       move30: l30.move,
@@ -496,21 +599,34 @@ async function main() {
       mae60: mf.mae,
       hit3_30: l30.move >= 3 ? 1 : 0,
       hit5_60: l60.move >= 5 ? 1 : 0,
-      burstUsd1s,
-      dynSlipBps,
+      burstUsd1s: null,
+      dynSlipBps: null,
       net30,
-      net30Pes,
+      net30Pes: null,
       net60,
-      makerFilled: maker.makerFilled,
+      makerFilled: null,
       cls30: classify3(net30, feeRoundtrip),
       cls60: classify3(net60, feeRoundtrip)
     });
+  }
+
+  const realPessimistic = evalWorker
+    ? await runWorkerPessimisticBatch({ jobs: pessimisticJobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps })
+    : computePessimisticBatchSync({ jobs: pessimisticJobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps });
+  for (const m of realPessimistic) {
+    const row = labeled[m.index];
+    if (!row) continue;
+    row.burstUsd1s = m.burstUsd1s;
+    row.dynSlipBps = m.dynSlipBps;
+    row.net30Pes = m.net30Pes;
+    row.makerFilled = m.makerFilled;
   }
 
   // placebo events (same count)
   const rand = mulberry32(seed);
   const placeboCount = labeled.length;
   const placeboLabeled = [];
+  const placeboJobs = [];
   let guard = 0;
   while (placeboLabeled.length < placeboCount && guard < placeboCount * 50 && midSeries.length > 0) {
     guard += 1;
@@ -527,16 +643,15 @@ async function main() {
 
     const net30 = netUsdFromMove(l30.move, base.mid, notionalUsd, takerBps);
     const net60 = netUsdFromMove(l60.move, base.mid, notionalUsd, takerBps);
-    const burstUsd1s = sumBurstUsd1sAt(trades, tradeCumUsd, base.ts);
-    const dynSlipBps = calcDynamicSlipBps(base.spreadBps, 0, burstUsd1s);
-    const move30Pes = applyDynamicSlipToMove(l30.move, base.mid, dynSlipBps);
-    const net30Pes = netUsdFromMove(move30Pes, base.mid, notionalUsd, takerBps);
-    const maker = checkMakerFill({
-      midSeries,
-      trades,
+    const rowIndex = placeboLabeled.length;
+    placeboJobs.push({
+      index: rowIndex,
       entryTs: base.ts,
       entryMid: base.mid,
-      side
+      side,
+      spreadBps: base.spreadBps,
+      pressureImb: 0,
+      move30: l30.move
     });
 
     placeboLabeled.push({
@@ -548,6 +663,7 @@ async function main() {
       spreadBps: base.spreadBps,
       pressureImb: 0,
       score: 0,
+      halfLifeMs: null,
       move5: l5 ? l5.move : null,
       move15: l15 ? l15.move : null,
       move30: l30.move,
@@ -556,15 +672,27 @@ async function main() {
       mae60: mf.mae,
       hit3_30: l30.move >= 3 ? 1 : 0,
       hit5_60: l60.move >= 5 ? 1 : 0,
-      burstUsd1s,
-      dynSlipBps,
+      burstUsd1s: null,
+      dynSlipBps: null,
       net30,
-      net30Pes,
+      net30Pes: null,
       net60,
-      makerFilled: maker.makerFilled,
+      makerFilled: null,
       cls30: classify3(net30, feeRoundtrip),
       cls60: classify3(net60, feeRoundtrip)
     });
+  }
+
+  const placeboPessimistic = evalWorker
+    ? await runWorkerPessimisticBatch({ jobs: placeboJobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps })
+    : computePessimisticBatchSync({ jobs: placeboJobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps });
+  for (const m of placeboPessimistic) {
+    const row = placeboLabeled[m.index];
+    if (!row) continue;
+    row.burstUsd1s = m.burstUsd1s;
+    row.dynSlipBps = m.dynSlipBps;
+    row.net30Pes = m.net30Pes;
+    row.makerFilled = m.makerFilled;
   }
 
   const allLabeled = labeled.concat(placeboLabeled);
@@ -648,7 +776,7 @@ async function main() {
   const candles = [...candleMap.values()].sort((a, b) => a.ts - b.ts);
 
   const eventsHeaders = [
-    'cohort', 'type', 'side', 'ts', 'mid', 'spreadBps', 'pressureImb', 'score',
+    'cohort', 'type', 'side', 'ts', 'mid', 'spreadBps', 'pressureImb', 'score', 'halfLifeMs',
     'move5', 'move15', 'move30', 'move60', 'mfe60', 'mae60',
     'hit3_30', 'hit5_60', 'burstUsd1s', 'dynSlipBps', 'net30', 'net30Pes', 'net60', 'makerFilled', 'cls30', 'cls60'
   ];
@@ -671,12 +799,14 @@ async function main() {
       maxDistanceUsd,
       wallAppearUsd,
       wallDisappearDropRatio,
+      minWallUsd,
       imbJumpThreshold,
       burstUsd1s,
       spreadJumpBps,
       clusterMs,
       notionalUsd,
       takerBps,
+      evalWorker,
       seed
     },
     counts: {

@@ -174,6 +174,7 @@ let prevMarketSnapshot = {
     bids: null,
     asks: null,
 };
+let oobPauseLastLogAt = 0;
 let tradeConfigLoaded = false;
 let depthSRAnalyzer = null;  // 遅延初期化 + ホットリロード対応
 let depthSRAggregator = null;  // 遅延初期化（config 読み込み後）
@@ -194,6 +195,16 @@ function toNumber(v) {
         return Number.isFinite(n) ? n : null;
     }
     return null;
+}
+
+function isOobResyncActive() {
+    const s = globalThis.__oobResyncState;
+    return s && s.active === true;
+}
+
+function getOobResyncReason() {
+    const s = globalThis.__oobResyncState;
+    return s?.reason ?? null;
 }
 function normalizeLevels(levels) {
     if (!Array.isArray(levels)) return [];
@@ -649,6 +660,21 @@ export function handleEvent(packet, opts) {
       tradeFlowTracker.updateOi(oiFromPacket, oiTs);
     }
     const tradeFlowState = tradeFlowTracker.getState();
+
+    // OOB_RESYNC中は特徴量生成を停止（誤板からのシグナルを防ぐ）
+    if (isOobResyncActive()) {
+        const nowTs = Date.now();
+        if ((nowTs - oobPauseLastLogAt) >= 1000) {
+            oobPauseLastLogAt = nowTs;
+            writeLog({
+                ts: nowTs,
+                channel: 'io',
+                type: 'oob_resync_pause',
+                reason: getOobResyncReason()
+            }).catch(() => {});
+        }
+        return;
+    }
 
     // MarketStateの更新（prev/currentを流す）。index.tsは生成と連結のみ。
     const curRaw = Array.isArray(packet) ? {} : (packet ?? {});

@@ -40,6 +40,7 @@ function calcPressure(levels, mid, side, maxDistanceUsd, buckets) {
   let total = 0;
   let strongestUsd = 0;
   let strongestDistUsd = null;
+  let strongestPx = null;
 
   for (const lv of levels) {
     const p = levelToUsd(lv);
@@ -51,6 +52,7 @@ function calcPressure(levels, mid, side, maxDistanceUsd, buckets) {
     if (p.usd > strongestUsd) {
       strongestUsd = p.usd;
       strongestDistUsd = dist;
+      strongestPx = p.px;
     }
 
     for (let i = 0; i < buckets.length; i += 1) {
@@ -62,7 +64,45 @@ function calcPressure(levels, mid, side, maxDistanceUsd, buckets) {
     }
   }
 
-  return { total, strongestUsd, strongestDistUsd, bucketSums };
+  return { total, strongestUsd, strongestDistUsd, strongestPx, bucketSums };
+}
+
+function updateWalls(levels, ts, minWallUsd, map) {
+  const currentPx = new Set();
+  for (const lv of levels) {
+    const p = levelToUsd(lv);
+    if (!p) continue;
+    currentPx.add(p.px);
+
+    let w = map.get(p.px);
+    if (!w && p.usd >= minWallUsd) {
+      w = { appearTs: ts, maxUsd: p.usd, halfLifeMs: null };
+      map.set(p.px, w);
+    } else if (w) {
+      if (p.usd > w.maxUsd) w.maxUsd = p.usd;
+      if (w.halfLifeMs === null && p.usd <= w.maxUsd * 0.5) {
+        w.halfLifeMs = ts - w.appearTs;
+      }
+    }
+  }
+
+  for (const [px, w] of map.entries()) {
+    if (!currentPx.has(px)) {
+      if (w.halfLifeMs === null) {
+        w.halfLifeMs = ts - w.appearTs;
+      }
+      if (ts - w.appearTs > 300000) {
+        map.delete(px);
+      }
+    }
+  }
+}
+
+function getWallHalfLife(px, ts, map) {
+  if (!px) return 0;
+  const w = map.get(px);
+  if (!w) return 0;
+  return w.halfLifeMs !== null ? w.halfLifeMs : (ts - w.appearTs);
 }
 
 function calcSlopeBpsPerSec(points) {
@@ -122,6 +162,7 @@ async function main() {
       'max-distance-usd': 200,
       'min-move-usd': 20,
       'min-pressure-usd': 250000,
+      'min-wall-usd': 150000,
       'imb-threshold': 0.12,
       'trend-window': 120,
       'burst-window-ms': 3000
@@ -135,6 +176,7 @@ async function main() {
   const maxDistanceUsd = Number(argv['max-distance-usd']);
   const minMoveUsd = Number(argv['min-move-usd']);
   const minPressureUsd = Number(argv['min-pressure-usd']);
+  const minWallUsd = Number(argv['min-wall-usd']);
   const imbThreshold = Number(argv['imb-threshold']);
   const trendWindow = Number(argv['trend-window']);
   const burstWindowMs = Number(argv['burst-window-ms']);
@@ -162,6 +204,7 @@ async function main() {
     'strongest_bid_usd', 'strongest_bid_dist_usd', 'strongest_ask_usd', 'strongest_ask_dist_usd',
     'bid_p_0_10', 'bid_p_10_25', 'bid_p_25_50', 'bid_p_50_100', 'bid_p_100_200',
     'ask_p_0_10', 'ask_p_10_25', 'ask_p_25_50', 'ask_p_50_100', 'ask_p_100_200',
+    'bid_wall_half_life_ms', 'ask_wall_half_life_ms',
     'burst_count_3s', 'burst_buy_usd_3s', 'burst_sell_usd_3s', 'burst_imbalance_3s',
     'target_ok_long', 'target_ok_short', 'pressure_ok_long', 'pressure_ok_short',
     'in_long_hint', 'in_short_hint'
@@ -172,6 +215,8 @@ async function main() {
 
   const midWindow = [];
   const tradesWindow = [];
+  const bidWallMap = new Map();
+  const askWallMap = new Map();
 
   let lineCount = 0;
   let sampled = 0;
@@ -243,6 +288,12 @@ async function main() {
     const bid = calcPressure(levels.bids, mid, 'bid', maxDistanceUsd, buckets);
     const ask = calcPressure(levels.asks, mid, 'ask', maxDistanceUsd, buckets);
 
+    updateWalls(levels.bids, ts, minWallUsd, bidWallMap);
+    updateWalls(levels.asks, ts, minWallUsd, askWallMap);
+
+    const bidWallHalfLifeMs = getWallHalfLife(bid.strongestPx, ts, bidWallMap);
+    const askWallHalfLifeMs = getWallHalfLife(ask.strongestPx, ts, askWallMap);
+
     const totalPressure = bid.total + ask.total;
     const pressureImb = totalPressure > 0 ? (bid.total - ask.total) / totalPressure : 0;
 
@@ -275,6 +326,7 @@ async function main() {
       ask.strongestUsd.toFixed(2), Number.isFinite(ask.strongestDistUsd) ? ask.strongestDistUsd.toFixed(2) : '',
       ...bid.bucketSums.map(v => v.toFixed(2)),
       ...ask.bucketSums.map(v => v.toFixed(2)),
+      bidWallHalfLifeMs, askWallHalfLifeMs,
       burst.count, burst.buyUsd.toFixed(2), burst.sellUsd.toFixed(2), burst.imbalance.toFixed(6),
       targetOkLong, targetOkShort, pressureOkLong, pressureOkShort,
       inLongHint, inShortHint
@@ -295,6 +347,7 @@ async function main() {
       maxDistanceUsd,
       minMoveUsd,
       minPressureUsd,
+      minWallUsd,
       imbThreshold,
       trendWindow,
       burstWindowMs

@@ -1,5 +1,6 @@
 import { markLayer } from './status/tracker.js';
 import { evaluateStatus } from './status/evaluator.js';
+import { createOrderbookSync } from './orderbook/OrderbookSync.js';
 /**
  * HLWS-BOT / WebSocket Core (skeleton only)
  * 目的: Hyperliquid WS 接続・再接続・ルーティング枠組み
@@ -46,7 +47,13 @@ const DEFAULT_CONFIG = {
 		{ type: 'l2Book', coin: 'BTC' },
 		{ type: 'trades', coin: 'BTC' },
 		{ type: 'activeAssetCtx', coin: 'BTC' }
-	]
+	],
+	ORDERBOOK_SYNC: {
+		enabled: process.env.WS_OOB_SYNC_ENABLED === '1',
+		restIntervalMs: Number(process.env.WS_OOB_SYNC_INTERVAL_MS || 60000),
+		driftThresholdRatio: Number(process.env.WS_OOB_SYNC_DRIFT_RATIO || 0.01),
+		compareTopLevels: Number(process.env.WS_OOB_SYNC_TOP_LEVELS || 5)
+	}
 };
 
 
@@ -97,9 +104,26 @@ async function HLWSClient(opts = {}) {
 	try { logger = (await import('./utils/logger.js')).write ? await import('./utils/logger.js') : null; } catch(e){ logger = null; }
 
 	const state = makeConnectionState();
+	let orderbookSync = null;
 	let staleMonitorTimer = null;
 	let reconnectTimer = null;
 	let isStopped = false; // ← #1修正: 停止フラグ
+
+	const syncCfg = Object.assign({}, DEFAULT_CONFIG.ORDERBOOK_SYNC, opts?.config?.orderbookSync || {});
+	if (syncCfg.enabled) {
+		orderbookSync = createOrderbookSync({
+			coin: (opts.config?.symbols && opts.config.symbols[0]) || 'BTC',
+			restIntervalMs: syncCfg.restIntervalMs,
+			driftThresholdRatio: syncCfg.driftThresholdRatio,
+			compareTopLevels: syncCfg.compareTopLevels,
+			logger: (event) => {
+				if (logger && typeof logger.write === 'function') {
+					logger.write(event).catch(() => {});
+				}
+				log(event);
+			}
+		});
+	}
 
 	// MergeSpec v1.0 logging helper: single point, no extra ts
 	function log(obj) { try { console.log(JSON.stringify(obj)); } catch (err) { console.error('[WS] log emit failed', err); } }
@@ -159,6 +183,9 @@ async function HLWSClient(opts = {}) {
 		switch (channel) {
 			case 'l2Book': {
 				const event = { ts: now(), channel: 'orderbook', data };
+				if (orderbookSync) {
+					try { orderbookSync.onWsOrderbook(data, event.ts); } catch (_) {}
+				}
 				try { handlers.orderbook.handleOrderbook(event); } catch (e) { log({ type: 'handler_error', handler: 'orderbook', detail: e && e.message }); }
 				break;
 			}
@@ -289,6 +316,7 @@ async function HLWSClient(opts = {}) {
 	}
 
 	function start(url) {
+		if (orderbookSync) orderbookSync.start();
 		// start stale monitor
 		if (!staleMonitorTimer) {
 			staleMonitorTimer = setInterval(() => {
@@ -310,6 +338,7 @@ async function HLWSClient(opts = {}) {
 
 	function stop() {
 		isStopped = true; // ← #1修正: 停止フラグをセット
+		if (orderbookSync) orderbookSync.stop();
 		if (staleMonitorTimer) { clearInterval(staleMonitorTimer); staleMonitorTimer = null; }
 		clearReconnect();
 		if (state.ws) { try { state.ws.close && state.ws.close(); } catch (e) { console.error('[WS] stop close failed', e); } }
@@ -324,7 +353,7 @@ async function HLWSClient(opts = {}) {
 		connectWS,
 		scheduleReconnect,
 		clearReconnect,
-		getState: () => ({...state}),
+		getState: () => ({...state, orderbookSync: orderbookSync ? orderbookSync.getState() : null}),
 		_internal: { CONFIG, state }
 	};
 }
