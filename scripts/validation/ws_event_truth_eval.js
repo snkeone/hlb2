@@ -290,6 +290,56 @@ function writeCsv(filePath, headers, rows) {
   fs.writeFileSync(filePath, `${out.join('\n')}\n`, 'utf8');
 }
 
+function quantile(values, q) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const arr = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (arr.length === 0) return null;
+  const idx = Math.max(0, Math.min(arr.length - 1, Math.floor((arr.length - 1) * q)));
+  return arr[idx];
+}
+
+function bucket3(v, q33, q66) {
+  if (!Number.isFinite(v) || !Number.isFinite(q33) || !Number.isFinite(q66)) return 'unknown';
+  if (v <= q33) return 'low';
+  if (v <= q66) return 'mid';
+  return 'high';
+}
+
+function calcRollingVolBps(midSeries, window = 60) {
+  const n = midSeries.length;
+  const out = new Array(n).fill(null);
+  const retQueue = [];
+  let sum = 0;
+  let sumSq = 0;
+
+  for (let i = 1; i < n; i += 1) {
+    const prev = midSeries[i - 1].mid;
+    const cur = midSeries[i].mid;
+    if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(cur)) {
+      out[i] = null;
+      continue;
+    }
+    const r = ((cur - prev) / prev) * 10000;
+    retQueue.push(r);
+    sum += r;
+    sumSq += (r * r);
+    if (retQueue.length > window) {
+      const old = retQueue.shift();
+      sum -= old;
+      sumSq -= (old * old);
+    }
+    const m = retQueue.length;
+    if (m >= 5) {
+      const mean = sum / m;
+      const variance = Math.max(0, (sumSq / m) - (mean * mean));
+      out[i] = Math.sqrt(variance);
+    } else {
+      out[i] = null;
+    }
+  }
+  return out;
+}
+
 function computePessimisticBatchSync({ jobs, midSeries, trades, tradeCumUsd, notionalUsd, takerBps }) {
   return jobs.map((j) => {
     const burstUsd1s = sumBurstUsd1sAt(trades, tradeCumUsd, j.entryTs);
@@ -363,7 +413,11 @@ async function main() {
     }
   });
 
-  const inputPath = path.resolve(String(argv.input));
+  const inputPaths = String(argv.input).split(',').map(p => path.resolve(p.trim())).filter(p => fs.existsSync(p));
+  if (inputPaths.length === 0) {
+    console.error(`[ERR] No valid input files found: ${argv.input}`);
+    process.exit(1);
+  }
   const outDir = path.resolve(String(argv['out-dir']));
   const maxLines = Number(argv['max-lines']);
   const sampleMs = Number(argv['sample-ms']);
@@ -382,7 +436,6 @@ async function main() {
 
   ensureDir(outDir);
 
-  const rl = openLineReader(inputPath);
   const midSeries = [];
   const trades = [];
   const tradeSec = new Map();
@@ -396,145 +449,147 @@ async function main() {
   let tradeEvents = 0;
   let lastSampleTs = 0;
   let prevFrame = null;
+  for (const inputPath of inputPaths) {
+    const rl = openLineReader(inputPath);
+    for await (const line of rl) {
+      lineCount += 1;
+      if (maxLines > 0 && lineCount > maxLines) break;
+      if (!line || line[0] !== '{') continue;
 
-  for await (const line of rl) {
-    lineCount += 1;
-    if (maxLines > 0 && lineCount > maxLines) break;
-    if (!line || line[0] !== '{') continue;
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      malformed += 1;
-      continue;
-    }
-
-    if (obj.channel === 'trades' && obj?.data?.channel === 'trades' && Array.isArray(obj?.data?.data)) {
-      tradeEvents += 1;
-      for (const tr of obj.data.data) {
-        const ts = toNum(tr?.time ?? obj.ts);
-        const px = toNum(tr?.px);
-        const sz = toNum(tr?.sz);
-        const side = tr?.side;
-        if (!Number.isFinite(ts) || !Number.isFinite(px) || !Number.isFinite(sz) || (side !== 'B' && side !== 'A')) continue;
-        const usd = px * sz;
-        trades.push({ ts, side, usd, px });
-        const b = secBucket(ts);
-        const t = tradeSec.get(b) || { buyUsd: 0, sellUsd: 0, volume: 0 };
-        if (side === 'B') t.buyUsd += usd;
-        else t.sellUsd += usd;
-        t.volume += sz;
-        tradeSec.set(b, t);
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        malformed += 1;
+        continue;
       }
-      continue;
-    }
 
-    if (!(obj.channel === 'orderbook' && obj?.data?.channel === 'l2Book')) continue;
-    orderbookEvents += 1;
+      if (obj.channel === 'trades' && obj?.data?.channel === 'trades' && Array.isArray(obj?.data?.data)) {
+        tradeEvents += 1;
+        for (const tr of obj.data.data) {
+          const ts = toNum(tr?.time ?? obj.ts);
+          const px = toNum(tr?.px);
+          const sz = toNum(tr?.sz);
+          const side = tr?.side;
+          if (!Number.isFinite(ts) || !Number.isFinite(px) || !Number.isFinite(sz) || (side !== 'B' && side !== 'A')) continue;
+          const usd = px * sz;
+          trades.push({ ts, side, usd, px });
+          const b = secBucket(ts);
+          const t = tradeSec.get(b) || { buyUsd: 0, sellUsd: 0, volume: 0 };
+          if (side === 'B') t.buyUsd += usd;
+          else t.sellUsd += usd;
+          t.volume += sz;
+          tradeSec.set(b, t);
+        }
+        continue;
+      }
 
-    const ts = toNum(obj?.data?.data?.time ?? obj.ts);
-    if (!Number.isFinite(ts)) continue;
-    if ((ts - lastSampleTs) < sampleMs) continue;
-    lastSampleTs = ts;
+      if (!(obj.channel === 'orderbook' && obj?.data?.channel === 'l2Book')) continue;
+      orderbookEvents += 1;
 
-    const parsed = parseLevels(obj);
-    if (!parsed) continue;
-    const bestBid = levelToUsd(parsed.bids[0]);
-    const bestAsk = levelToUsd(parsed.asks[0]);
-    if (!bestBid || !bestAsk || bestBid.px >= bestAsk.px) continue;
+      const ts = toNum(obj?.data?.data?.time ?? obj.ts);
+      if (!Number.isFinite(ts)) continue;
+      if ((ts - lastSampleTs) < sampleMs) continue;
+      lastSampleTs = ts;
 
-    const mid = (bestBid.px + bestAsk.px) / 2;
-    const spreadBps = ((bestAsk.px - bestBid.px) / mid) * 10000;
+      const parsed = parseLevels(obj);
+      if (!parsed) continue;
+      const bestBid = levelToUsd(parsed.bids[0]);
+      const bestAsk = levelToUsd(parsed.asks[0]);
+      if (!bestBid || !bestAsk || bestBid.px >= bestAsk.px) continue;
 
-    const bid = calcSidePressure(parsed.bids, mid, 'bid', maxDistanceUsd);
-    const ask = calcSidePressure(parsed.asks, mid, 'ask', maxDistanceUsd);
-    const total = bid.total + ask.total;
-    const imb = total > 0 ? (bid.total - ask.total) / total : 0;
+      const mid = (bestBid.px + bestAsk.px) / 2;
+      const spreadBps = ((bestAsk.px - bestBid.px) / mid) * 10000;
 
-    updateWalls(parsed.bids, ts, minWallUsd, bidWallMap);
-    updateWalls(parsed.asks, ts, minWallUsd, askWallMap);
+      const bid = calcSidePressure(parsed.bids, mid, 'bid', maxDistanceUsd);
+      const ask = calcSidePressure(parsed.asks, mid, 'ask', maxDistanceUsd);
+      const total = bid.total + ask.total;
+      const imb = total > 0 ? (bid.total - ask.total) / total : 0;
 
-    midSeries.push({ ts, mid, spreadBps, bidNearUsd: bid.near, askNearUsd: ask.near });
+      updateWalls(parsed.bids, ts, minWallUsd, bidWallMap);
+      updateWalls(parsed.asks, ts, minWallUsd, askWallMap);
 
-    const oneSecFrom = ts - 1000;
-    let buy1s = 0;
-    let sell1s = 0;
-    for (let i = trades.length - 1; i >= 0; i -= 1) {
-      if (trades[i].ts < oneSecFrom) break;
-      if (trades[i].side === 'B') buy1s += trades[i].usd;
-      else sell1s += trades[i].usd;
-    }
-    const burstTotal = buy1s + sell1s;
-    const burstImb = burstTotal > 0 ? (buy1s - sell1s) / burstTotal : 0;
+      midSeries.push({ ts, mid, spreadBps, bidNearUsd: bid.near, askNearUsd: ask.near });
 
-    if (prevFrame) {
-      const imbJump = imb - prevFrame.imb;
-      if (Math.abs(imbJump) >= imbJumpThreshold) {
+      const oneSecFrom = ts - 1000;
+      let buy1s = 0;
+      let sell1s = 0;
+      for (let i = trades.length - 1; i >= 0; i -= 1) {
+        if (trades[i].ts < oneSecFrom) break;
+        if (trades[i].side === 'B') buy1s += trades[i].usd;
+        else sell1s += trades[i].usd;
+      }
+      const burstTotal = buy1s + sell1s;
+      const burstImb = burstTotal > 0 ? (buy1s - sell1s) / burstTotal : 0;
+
+      if (prevFrame) {
+        const imbJump = imb - prevFrame.imb;
+        if (Math.abs(imbJump) >= imbJumpThreshold) {
+          rawEvents.push({
+            ts,
+            type: 'imbalance_jump',
+            side: imb > 0 ? 'LONG' : 'SHORT',
+            score: Math.abs(imbJump),
+            mid,
+            spreadBps,
+            pressureImb: imb,
+            extra: { imbJump }
+          });
+        }
+
+        const bidWallAppear = bid.strongestUsd >= wallAppearUsd && bid.strongestUsd > prevFrame.bidStrongestUsd;
+        if (bidWallAppear) {
+          rawEvents.push({ ts, type: 'wall_appear', side: 'LONG', score: bid.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: bid.strongestUsd, dist: bid.strongestDist, halfLifeMs: getWallHalfLife(bid.strongestPx, ts, bidWallMap) } });
+        }
+        const askWallAppear = ask.strongestUsd >= wallAppearUsd && ask.strongestUsd > prevFrame.askStrongestUsd;
+        if (askWallAppear) {
+          rawEvents.push({ ts, type: 'wall_appear', side: 'SHORT', score: ask.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: ask.strongestUsd, dist: ask.strongestDist, halfLifeMs: getWallHalfLife(ask.strongestPx, ts, askWallMap) } });
+        }
+
+        if (prevFrame.bidStrongestUsd > 0) {
+          const drop = (prevFrame.bidStrongestUsd - bid.strongestUsd) / prevFrame.bidStrongestUsd;
+          if (drop >= wallDisappearDropRatio) {
+            rawEvents.push({ ts, type: 'wall_disappear', side: 'SHORT', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.bidStrongestPx, ts, bidWallMap) } });
+          }
+        }
+        if (prevFrame.askStrongestUsd > 0) {
+          const drop = (prevFrame.askStrongestUsd - ask.strongestUsd) / prevFrame.askStrongestUsd;
+          if (drop >= wallDisappearDropRatio) {
+            rawEvents.push({ ts, type: 'wall_disappear', side: 'LONG', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.askStrongestPx, ts, askWallMap) } });
+          }
+        }
+
+        const spreadJump = spreadBps - prevFrame.spreadBps;
+        if (spreadJump >= spreadJumpBps) {
+          const side = bid.near < ask.near ? 'SHORT' : 'LONG';
+          rawEvents.push({ ts, type: 'spread_jump', side, score: spreadJump, mid, spreadBps, pressureImb: imb, extra: { spreadJump } });
+        }
+      }
+
+      if (burstTotal >= burstUsd1s) {
         rawEvents.push({
           ts,
-          type: 'imbalance_jump',
-          side: imb > 0 ? 'LONG' : 'SHORT',
-          score: Math.abs(imbJump),
+          type: 'trade_burst',
+          side: burstImb >= 0 ? 'LONG' : 'SHORT',
+          score: burstTotal,
           mid,
           spreadBps,
           pressureImb: imb,
-          extra: { imbJump }
+          extra: { burstTotal, burstImb }
         });
       }
 
-      const bidWallAppear = bid.strongestUsd >= wallAppearUsd && bid.strongestUsd > prevFrame.bidStrongestUsd;
-      if (bidWallAppear) {
-        rawEvents.push({ ts, type: 'wall_appear', side: 'LONG', score: bid.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: bid.strongestUsd, dist: bid.strongestDist, halfLifeMs: getWallHalfLife(bid.strongestPx, ts, bidWallMap) } });
-      }
-      const askWallAppear = ask.strongestUsd >= wallAppearUsd && ask.strongestUsd > prevFrame.askStrongestUsd;
-      if (askWallAppear) {
-        rawEvents.push({ ts, type: 'wall_appear', side: 'SHORT', score: ask.strongestUsd, mid, spreadBps, pressureImb: imb, extra: { wallUsd: ask.strongestUsd, dist: ask.strongestDist, halfLifeMs: getWallHalfLife(ask.strongestPx, ts, askWallMap) } });
-      }
-
-      if (prevFrame.bidStrongestUsd > 0) {
-        const drop = (prevFrame.bidStrongestUsd - bid.strongestUsd) / prevFrame.bidStrongestUsd;
-        if (drop >= wallDisappearDropRatio) {
-          rawEvents.push({ ts, type: 'wall_disappear', side: 'SHORT', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.bidStrongestPx, ts, bidWallMap) } });
-        }
-      }
-      if (prevFrame.askStrongestUsd > 0) {
-        const drop = (prevFrame.askStrongestUsd - ask.strongestUsd) / prevFrame.askStrongestUsd;
-        if (drop >= wallDisappearDropRatio) {
-          rawEvents.push({ ts, type: 'wall_disappear', side: 'LONG', score: drop, mid, spreadBps, pressureImb: imb, extra: { drop, halfLifeMs: getWallHalfLife(prevFrame.askStrongestPx, ts, askWallMap) } });
-        }
-      }
-
-      const spreadJump = spreadBps - prevFrame.spreadBps;
-      if (spreadJump >= spreadJumpBps) {
-        const side = bid.near < ask.near ? 'SHORT' : 'LONG';
-        rawEvents.push({ ts, type: 'spread_jump', side, score: spreadJump, mid, spreadBps, pressureImb: imb, extra: { spreadJump } });
-      }
-    }
-
-    if (burstTotal >= burstUsd1s) {
-      rawEvents.push({
+      prevFrame = {
         ts,
-        type: 'trade_burst',
-        side: burstImb >= 0 ? 'LONG' : 'SHORT',
-        score: burstTotal,
-        mid,
         spreadBps,
-        pressureImb: imb,
-        extra: { burstTotal, burstImb }
-      });
+        imb,
+        bidStrongestUsd: bid.strongestUsd,
+        askStrongestUsd: ask.strongestUsd,
+        bidStrongestPx: bid.strongestPx,
+        askStrongestPx: ask.strongestPx
+      };
     }
-
-    prevFrame = {
-      ts,
-      spreadBps,
-      imb,
-      bidStrongestUsd: bid.strongestUsd,
-      askStrongestUsd: ask.strongestUsd,
-      bidStrongestPx: bid.strongestPx,
-      askStrongestPx: ask.strongestPx
-    };
-  }
+  } // End loop over files
 
   // Cluster events: within clusterMs, same type+side keep highest score
   rawEvents.sort((a, b) => a.ts - b.ts);
@@ -557,6 +612,16 @@ async function main() {
   }
   const labeled = [];
   const pessimisticJobs = [];
+  const volBpsSeries = calcRollingVolBps(midSeries, 60);
+  const spreadSeries = midSeries.map((x) => x.spreadBps).filter(Number.isFinite);
+  const liqSeries = midSeries.map((x) => ((x.bidNearUsd || 0) + (x.askNearUsd || 0))).filter(Number.isFinite);
+  const volSeries = volBpsSeries.filter(Number.isFinite);
+  const spreadQ33 = quantile(spreadSeries, 0.33);
+  const spreadQ66 = quantile(spreadSeries, 0.66);
+  const liqQ33 = quantile(liqSeries, 0.33);
+  const liqQ66 = quantile(liqSeries, 0.66);
+  const volQ33 = quantile(volSeries, 0.33);
+  const volQ66 = quantile(volSeries, 0.66);
   for (const e of events) {
     const idx = binarySearchFirstTs(midSeries, e.ts);
     if (idx >= midSeries.length) continue;
@@ -591,6 +656,9 @@ async function main() {
       pressureImb: e.pressureImb,
       score: e.score,
       halfLifeMs: e.extra?.halfLifeMs ?? null,
+      regimeVolBucket: bucket3(volBpsSeries[idx], volQ33, volQ66),
+      regimeSpreadBucket: bucket3(midSeries[idx].spreadBps, spreadQ33, spreadQ66),
+      regimeLiqBucket: bucket3((midSeries[idx].bidNearUsd || 0) + (midSeries[idx].askNearUsd || 0), liqQ33, liqQ66),
       move5: l5 ? l5.move : null,
       move15: l15 ? l15.move : null,
       move30: l30.move,
@@ -608,6 +676,8 @@ async function main() {
       cls30: classify3(net30, feeRoundtrip),
       cls60: classify3(net60, feeRoundtrip)
     });
+    const row = labeled[labeled.length - 1];
+    row.regimeKey = `${row.regimeVolBucket}|${row.regimeSpreadBucket}|${row.regimeLiqBucket}`;
   }
 
   const realPessimistic = evalWorker
@@ -664,6 +734,9 @@ async function main() {
       pressureImb: 0,
       score: 0,
       halfLifeMs: null,
+      regimeVolBucket: bucket3(volBpsSeries[idx], volQ33, volQ66),
+      regimeSpreadBucket: bucket3(base.spreadBps, spreadQ33, spreadQ66),
+      regimeLiqBucket: bucket3((base.bidNearUsd || 0) + (base.askNearUsd || 0), liqQ33, liqQ66),
       move5: l5 ? l5.move : null,
       move15: l15 ? l15.move : null,
       move30: l30.move,
@@ -681,6 +754,8 @@ async function main() {
       cls30: classify3(net30, feeRoundtrip),
       cls60: classify3(net60, feeRoundtrip)
     });
+    const row = placeboLabeled[placeboLabeled.length - 1];
+    row.regimeKey = `${row.regimeVolBucket}|${row.regimeSpreadBucket}|${row.regimeLiqBucket}`;
   }
 
   const placeboPessimistic = evalWorker
@@ -756,6 +831,49 @@ async function main() {
     p_net30_pos: a.net30Pos / a.count
   })).sort((x, y) => y.count - x.count);
 
+  // regime stats: detect regime-specific collapses
+  const regimeAgg = new Map();
+  function regimeKeyFn(r) {
+    return `${r.cohort}|${r.type}|${r.side}|${r.regimeVolBucket}|${r.regimeSpreadBucket}|${r.regimeLiqBucket}`;
+  }
+  for (const r of allLabeled) {
+    const k = regimeKeyFn(r);
+    const a = regimeAgg.get(k) || {
+      cohort: r.cohort,
+      type: r.type,
+      side: r.side,
+      regime_vol: r.regimeVolBucket,
+      regime_spread: r.regimeSpreadBucket,
+      regime_liq: r.regimeLiqBucket,
+      count: 0,
+      sumNet30Pes: 0,
+      sumHit3: 0,
+      sumMakerFilled: 0,
+      netPos: 0
+    };
+    a.count += 1;
+    a.sumNet30Pes += r.net30Pes;
+    a.sumHit3 += r.hit3_30;
+    a.sumMakerFilled += (r.makerFilled === 1 ? 1 : 0);
+    if (r.net30Pes > 0) a.netPos += 1;
+    regimeAgg.set(k, a);
+  }
+  const regimeStats = [...regimeAgg.values()]
+    .map((a) => ({
+      cohort: a.cohort,
+      type: a.type,
+      side: a.side,
+      regime_vol: a.regime_vol,
+      regime_spread: a.regime_spread,
+      regime_liq: a.regime_liq,
+      count: a.count,
+      avg_net30_pes: a.sumNet30Pes / a.count,
+      p_net30_pes_pos: a.netPos / a.count,
+      hit3_30_rate: a.sumHit3 / a.count,
+      maker_fill_rate: a.sumMakerFilled / a.count
+    }))
+    .sort((a, b) => b.count - a.count);
+
   // candles 1s from mid + trade volume
   const candleMap = new Map();
   for (const m of midSeries) {
@@ -777,6 +895,7 @@ async function main() {
 
   const eventsHeaders = [
     'cohort', 'type', 'side', 'ts', 'mid', 'spreadBps', 'pressureImb', 'score', 'halfLifeMs',
+    'regimeVolBucket', 'regimeSpreadBucket', 'regimeLiqBucket', 'regimeKey',
     'move5', 'move15', 'move30', 'move60', 'mfe60', 'mae60',
     'hit3_30', 'hit5_60', 'burstUsd1s', 'dynSlipBps', 'net30', 'net30Pes', 'net60', 'makerFilled', 'cls30', 'cls60'
   ];
@@ -785,13 +904,15 @@ async function main() {
     'hit3_30_rate', 'hit5_60_rate', 'avg_mfe60', 'avg_mae60', 'p_net30_pos'
   ];
   const candleHeaders = ['ts', 'open', 'high', 'low', 'close', 'volume', 'buyUsd', 'sellUsd'];
+  const regimeHeaders = ['cohort', 'type', 'side', 'regime_vol', 'regime_spread', 'regime_liq', 'count', 'avg_net30_pes', 'p_net30_pes_pos', 'hit3_30_rate', 'maker_fill_rate'];
 
   writeCsv(path.join(outDir, 'events_labeled.csv'), eventsHeaders, allLabeled);
   writeCsv(path.join(outDir, 'event_stats.csv'), statsHeaders, stats);
   writeCsv(path.join(outDir, 'candles_1s.csv'), candleHeaders, candles);
+  writeCsv(path.join(outDir, 'event_stats_regime.csv'), regimeHeaders, regimeStats);
 
   const summary = {
-    input: inputPath,
+    inputs: inputPaths,
     outDir,
     params: {
       maxLines,

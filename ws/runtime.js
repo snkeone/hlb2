@@ -38,6 +38,43 @@ function clamp(value, min, max) {
   return value;
 }
 
+function calcBookImbalance(market) {
+  const bids = Array.isArray(market?.bids) ? market.bids : [];
+  const asks = Array.isArray(market?.asks) ? market.asks : [];
+  const sumUsd = (levels) => levels.slice(0, 20).reduce((acc, lv) => {
+    const px = toFiniteNumber(lv?.price ?? lv?.px, null);
+    const sz = toFiniteNumber(lv?.size ?? lv?.sz, null);
+    if (!Number.isFinite(px) || !Number.isFinite(sz) || sz <= 0) return acc;
+    return acc + (px * sz);
+  }, 0);
+  const bidUsd = sumUsd(bids);
+  const askUsd = sumUsd(asks);
+  const total = bidUsd + askUsd;
+  return total > 0 ? (bidUsd - askUsd) / total : 0;
+}
+
+function calcSpreadBps(market) {
+  const bid = toFiniteNumber(market?.bestBidPx, null);
+  const ask = toFiniteNumber(market?.bestAskPx, null);
+  const mid = toFiniteNumber(market?.midPx, null);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || !Number.isFinite(mid) || mid <= 0) return 0;
+  return ((ask - bid) / mid) * 10000;
+}
+
+function calcBurstUsd1s(market) {
+  const windows = market?.tradeFlow?.windows ?? {};
+  const w5 = windows['5000'] ?? windows[5000] ?? null;
+  const vol5 = toFiniteNumber(w5?.volumeUsd, 0);
+  return vol5 > 0 ? (vol5 / 5) : 0;
+}
+
+function calcDynSlipBps(spreadBps, pressureImb, burstUsd1s) {
+  const s = Number.isFinite(spreadBps) ? spreadBps : 0;
+  const imbAbs = Number.isFinite(pressureImb) ? Math.abs(pressureImb) : 0;
+  const burst = Number.isFinite(burstUsd1s) ? burstUsd1s : 0;
+  return 1.5 + (1.0 * s) + (0.5 * imbAbs) + (0.1 * (burst / 100000));
+}
+
 function buildWsLiveSnapshot(market, ioMetrics = null) {
   const tradeFlow = market?.tradeFlow ?? null;
   const windows = tradeFlow?.windows ?? {};
@@ -1911,6 +1948,16 @@ export async function startRuntime({ mode, hlEnabled, registryReport }) {
   let forcedExitDone = false;
   let forcedEntryTick = null;
   const FORCE_EXIT_AFTER_TICKS = 3;
+  const shadowCfg = {
+    enabled: process.env.V2_SHADOW_ENABLED === '1',
+    holdMs: Math.max(1000, Math.floor(toFiniteNumber(process.env.V2_SHADOW_HOLD_MS, 30000))),
+    notionalUsd: Math.max(1, toFiniteNumber(process.env.V2_SHADOW_NOTIONAL_USD, 1000)),
+    takerBps: Math.max(0, toFiniteNumber(process.env.V2_SHADOW_TAKER_BPS, 4.5))
+  };
+  const shadowState = {
+    open: null,
+    seq: 0
+  };
 
   // --- STDINリスナー（手動リセット用） ---
   process.stdin.resume();
@@ -2181,6 +2228,89 @@ export async function startRuntime({ mode, hlEnabled, registryReport }) {
         minBandDistanceUsd: monitor?.minBandDistanceUsd ?? null,
         plannedExitDistance: monitor?.plannedExitDistance ?? null
       });
+
+      // Live Shadow Test (no real orders): same pessimistic fill model in realtime.
+      if (shadowCfg.enabled) {
+        try {
+          const nowTsShadow = Date.now();
+          const mid = toFiniteNumber(marketState?.midPx, null);
+          if (Number.isFinite(mid) && mid > 0) {
+            const spreadBps = calcSpreadBps(marketState);
+            const pressureImb = calcBookImbalance(marketState);
+            const burstUsd1s = calcBurstUsd1s(marketState);
+            const dynSlipBps = calcDynSlipBps(spreadBps, pressureImb, burstUsd1s);
+            const slipUsd = mid * (dynSlipBps / 10000);
+            const qty = shadowCfg.notionalUsd / mid;
+
+            const decisionSide = String(monitorSideRaw || '').toLowerCase();
+            const isBuy = decisionSide === 'buy';
+            const isSell = decisionSide === 'sell';
+
+            if (!shadowState.open && (isBuy || isSell)) {
+              const dir = isBuy ? 'LONG' : 'SHORT';
+              const entryPx = dir === 'LONG' ? (mid + slipUsd) : (mid - slipUsd);
+              shadowState.open = {
+                id: `${nowTsShadow}_${shadowState.seq += 1}`,
+                dir,
+                ts: nowTsShadow,
+                entryPx,
+                entryMid: mid,
+                qty,
+                spreadBps,
+                pressureImb,
+                burstUsd1s,
+                dynSlipBps,
+                reason: monitorReasonRaw ?? null
+              };
+              writeLog({
+                ts: nowTsShadow,
+                type: 'shadow_open',
+                shadowId: shadowState.open.id,
+                dir,
+                entryPx,
+                entryMid: mid,
+                qty,
+                dynSlipBps,
+                spreadBps,
+                pressureImb,
+                burstUsd1s,
+                reason: shadowState.open.reason
+              }).catch(() => {});
+            } else if (shadowState.open) {
+              const open = shadowState.open;
+              const timedOut = (nowTsShadow - open.ts) >= shadowCfg.holdMs;
+              const flipped = (open.dir === 'LONG' && isSell) || (open.dir === 'SHORT' && isBuy);
+              if (timedOut || flipped) {
+                const exitPx = open.dir === 'LONG' ? (mid - slipUsd) : (mid + slipUsd);
+                const gross = open.dir === 'LONG'
+                  ? ((exitPx - open.entryPx) * open.qty)
+                  : ((open.entryPx - exitPx) * open.qty);
+                const fee = shadowCfg.notionalUsd * (2 * shadowCfg.takerBps / 10000);
+                const net = gross - fee;
+                writeLog({
+                  ts: nowTsShadow,
+                  type: 'shadow_close',
+                  shadowId: open.id,
+                  dir: open.dir,
+                  openTs: open.ts,
+                  closeTs: nowTsShadow,
+                  holdMs: nowTsShadow - open.ts,
+                  entryPx: open.entryPx,
+                  exitPx,
+                  closeMid: mid,
+                  qty: open.qty,
+                  dynSlipBpsExit: dynSlipBps,
+                  grossUsd: gross,
+                  feeUsd: fee,
+                  netUsd: net,
+                  closeReason: flipped ? 'decision_flip' : 'timeout'
+                }).catch(() => {});
+                shadowState.open = null;
+              }
+            }
+          }
+        } catch (_) {}
+      }
       
       // 優先度3: 時刻更新（最優先・save前に実行必須）
       tickCount++;

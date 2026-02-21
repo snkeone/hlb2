@@ -24,6 +24,7 @@ SAMPLE_MS="${SAMPLE_MS:-250}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$RUNS_DIR/$RUN_ID"
 NOTIFY_CMD="${V2_NOTIFY_CMD:-}"
+NOTIFY_ENABLED="${V2_NOTIFY_ENABLED:-1}"
 
 write_status() {
   local state="$1"
@@ -34,6 +35,9 @@ JSON
 }
 
 notify_user() {
+  if [ "$NOTIFY_ENABLED" != "1" ]; then
+    return 0
+  fi
   local level="$1"
   local msg="$2"
   local mail_script="$ROOT_DIR/scripts/ops/send_validation_report_mail.sh"

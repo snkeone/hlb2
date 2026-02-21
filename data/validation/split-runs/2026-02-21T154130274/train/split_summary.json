@@ -1,0 +1,34 @@
+{
+  "phase": "train",
+  "runId": "2026-02-21T154130274",
+  "files": [
+    "/home/hlws/hlws-bot/logs/raw-20260220.jsonl.gz",
+    "/home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz"
+  ],
+  "chunks": [
+    {
+      "lineCount": 8001,
+      "malformed": 0,
+      "orderbookEvents": 483,
+      "tradeEvents": 549,
+      "midSamples": 483,
+      "rawEvents": 669,
+      "clusteredEvents": 616,
+      "labeledReal": 469,
+      "labeledPlacebo": 469,
+      "candles1s": 275
+    },
+    {
+      "lineCount": 8001,
+      "malformed": 0,
+      "orderbookEvents": 305,
+      "tradeEvents": 837,
+      "midSamples": 305,
+      "rawEvents": 778,
+      "clusteredEvents": 771,
+      "labeledReal": 441,
+      "labeledPlacebo": 441,
+      "candles1s": 168
+    }
+  ]
+}

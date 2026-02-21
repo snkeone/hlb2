@@ -59,85 +59,119 @@ function main() {
     default: {
       'run-dir': '/home/hlws/hlb2/data/validation/run-latest',
       'min-count': 300,
-      'min-count-final': 1000,
-      'min-delta-p-pos': 0.02,
-      'min-delta-hit3': 0.02,
-      'max-tail-loss-p95': 3.0
+      'min-count-final': 1000
     }
   });
 
   const runDir = path.resolve(String(argv['run-dir']));
   const eventsPath = path.join(runDir, 'events_labeled.csv');
-  const statsPath = path.join(runDir, 'event_stats.csv');
 
-  if (!fs.existsSync(eventsPath) || !fs.existsSync(statsPath)) {
+  if (!fs.existsSync(eventsPath)) {
     console.error('[ERR] required files not found in run dir');
     process.exit(1);
   }
 
   const events = parseCsv(eventsPath);
-  const stats = parseCsv(statsPath);
 
-  const realByKey = new Map();
-  const placeboByKey = new Map();
+  const groups = new Map();
+  let minTs = Infinity;
+  let maxTs = -Infinity;
 
-  for (const r of stats) {
-    const type = r.type;
-    const side = r.side;
-    const k = mkKey(type, side);
-    if (r.cohort === 'real') realByKey.set(k, r);
-    if (r.cohort === 'placebo' && r.type === 'placebo_random') placeboByKey.set(side, r);
+  for (const r of events) {
+    const ts = toNum(r.ts, NaN);
+    if (!Number.isFinite(ts)) continue;
+    if (ts < minTs) minTs = ts;
+    if (ts > maxTs) maxTs = ts;
+
+    const net = toNum(r.net30Pes, NaN);
+    if (!Number.isFinite(net)) continue;
+
+    const k = `${r.cohort}|${r.type}|${r.side}`;
+    const g = groups.get(k) || [];
+    g.push({ ts, net });
+    groups.set(k, g);
   }
 
-  const netByKeyReal = new Map();
-  const netByKeyPlacebo = new Map();
-  for (const r of events) {
-    const side = r.side;
-    const net30 = toNum(r.net30, NaN);
-    if (!Number.isFinite(net30)) continue;
-    if (r.cohort === 'real') {
-      const k = mkKey(r.type, side);
-      const arr = netByKeyReal.get(k) || [];
-      arr.push(net30);
-      netByKeyReal.set(k, arr);
-    } else if (r.cohort === 'placebo') {
-      const arr = netByKeyPlacebo.get(side) || [];
-      arr.push(net30);
-      netByKeyPlacebo.set(side, arr);
+  const durationDays = Math.max(1, (maxTs - minTs) / 86400000);
+
+  const realMetrics = new Map();
+  const placeboMetrics = new Map();
+
+  for (const [k, arr] of groups.entries()) {
+    const parts = k.split('|');
+    const cohort = parts[0];
+    const type = parts[1];
+    const side = parts[2];
+
+    arr.sort((a, b) => a.ts - b.ts);
+
+    let sumNet = 0;
+    let sumWin = 0;
+    let countWin = 0;
+    let currentConsLoss = 0;
+    let maxConsLoss = 0;
+    let cml = 0;
+    let peakCml = 0;
+    let maxDD = 0;
+    const netArr = [];
+
+    for (const r of arr) {
+      const net = r.net;
+      netArr.push(net);
+      sumNet += net;
+      if (net > 0) {
+        sumWin += net;
+        countWin += 1;
+        currentConsLoss = 0;
+      } else if (net < 0) {
+        currentConsLoss += 1;
+        if (currentConsLoss > maxConsLoss) maxConsLoss = currentConsLoss;
+      }
+      cml += net;
+      if (cml > peakCml) peakCml = cml;
+      const dd = peakCml - cml;
+      if (dd > maxDD) maxDD = dd;
+    }
+
+    const count = arr.length;
+    const avgNet = sumNet / count;
+    const pPos = countWin / count;
+    const meanWin = countWin > 0 ? sumWin / countWin : 0;
+    const p95Loss = Math.abs(Math.min(0, percentile(netArr, 0.05) ?? 0));
+    const avgDailyNet = sumNet / durationDays;
+
+    let grossLoss = 0;
+    for (const net of netArr) if (net < 0) grossLoss -= net;
+    const pf = grossLoss > 0 ? sumWin / grossLoss : 999;
+
+    const metrics = {
+      type, side, count,
+      avgNet, pPos, meanWin, p95Loss, maxConsLoss, maxDD, avgDailyNet, pf
+    };
+
+    if (cohort === 'real') {
+      realMetrics.set(`${type}|${side}`, metrics);
+    } else if (cohort === 'placebo' && type === 'placebo_random') {
+      placeboMetrics.set(side, metrics);
     }
   }
 
   const candidates = [];
-  for (const [k, real] of realByKey.entries()) {
-    const [type, side] = k.split('|');
-    const placebo = placeboByKey.get(side);
-    if (!placebo) continue;
+  for (const [k, real] of realMetrics.entries()) {
+    const placebo = placeboMetrics.get(real.side) || { avgNet: 0, pPos: 0 };
 
-    const count = toNum(real.count, 0);
+    const count = real.count;
     const stage = stageFromCount(count);
-
-    const avgNetReal = toNum(real.avg_net30, 0);
-    const avgNetPl = toNum(placebo.avg_net30, 0);
-    const pPosReal = toNum(real.p_net30_pos, 0);
-    const pPosPl = toNum(placebo.p_net30_pos, 0);
-    const hit3Real = toNum(real.hit3_30_rate, 0);
-    const hit3Pl = toNum(placebo.hit3_30_rate, 0);
-
-    const dPos = pPosReal - pPosPl;
-    const dHit3 = hit3Real - hit3Pl;
-    const liftNet = avgNetReal - avgNetPl;
-
-    const p95LossReal = Math.abs(Math.min(0, percentile(netByKeyReal.get(k) || [], 0.05) ?? 0));
-    const p95LossPl = Math.abs(Math.min(0, percentile(netByKeyPlacebo.get(side) || [], 0.05) ?? 0));
 
     const enoughForScreen = count >= toNum(argv['min-count'], 300);
     const enoughForFinal = count >= toNum(argv['min-count-final'], 1000);
 
     const passCore = (
-      avgNetReal > 0 &&
-      dPos >= toNum(argv['min-delta-p-pos'], 0.02) &&
-      dHit3 >= toNum(argv['min-delta-hit3'], 0.02) &&
-      p95LossReal <= toNum(argv['max-tail-loss-p95'], 3.0)
+      real.avgNet > 0 &&
+      real.pPos >= 0.55 &&
+      real.p95Loss <= 3.5 * real.meanWin &&
+      real.maxConsLoss <= 12 &&
+      real.maxDD <= Math.max(0, 5 * real.avgDailyNet)
     );
 
     let decision = 'reject';
@@ -146,29 +180,27 @@ function main() {
     else if (passCore) decision = 'watchlist';
 
     candidates.push({
-      type,
-      side,
+      type: real.type,
+      side: real.side,
       count,
       stage,
       decision,
-      avg_net30_real: avgNetReal,
-      avg_net30_placebo: avgNetPl,
-      lift_net30: liftNet,
-      p_net30_pos_real: pPosReal,
-      p_net30_pos_placebo: pPosPl,
-      delta_p_net30_pos: dPos,
-      hit3_30_real: hit3Real,
-      hit3_30_placebo: hit3Pl,
-      delta_hit3_30: dHit3,
-      tail_loss_p95_real: p95LossReal,
-      tail_loss_p95_placebo: p95LossPl
+      avg_net_real: real.avgNet,
+      avg_net_placebo: placebo.avgNet,
+      p_pos_real: real.pPos,
+      p_pos_placebo: placebo.pPos,
+      mean_win_real: real.meanWin,
+      p95_loss_real: real.p95Loss,
+      max_dd_real: real.maxDD,
+      max_cons_loss_real: real.maxConsLoss,
+      pf_real: real.pf
     });
   }
 
   candidates.sort((a, b) => {
     if (stageOrder(b.stage) !== stageOrder(a.stage)) return stageOrder(b.stage) - stageOrder(a.stage);
     if (b.decision !== a.decision) return b.decision.localeCompare(a.decision);
-    return (b.lift_net30 - a.lift_net30);
+    return (b.avg_net_real - a.avg_net_real);
   });
 
   const summary = {
@@ -177,9 +209,10 @@ function main() {
     thresholds: {
       minCount: toNum(argv['min-count'], 300),
       minCountFinal: toNum(argv['min-count-final'], 1000),
-      minDeltaPPos: toNum(argv['min-delta-p-pos'], 0.02),
-      minDeltaHit3: toNum(argv['min-delta-hit3'], 0.02),
-      maxTailLossP95: toNum(argv['max-tail-loss-p95'], 3.0)
+      minPPos: 0.55,
+      maxTailLossRatio: 3.5,
+      maxConsLoss: 12,
+      maxDDRatio: 5.0
     },
     totals: {
       realRows: events.filter((x) => x.cohort === 'real').length,
@@ -194,10 +227,10 @@ function main() {
 
   const candHeaders = [
     'type', 'side', 'count', 'stage', 'decision',
-    'avg_net30_real', 'avg_net30_placebo', 'lift_net30',
-    'p_net30_pos_real', 'p_net30_pos_placebo', 'delta_p_net30_pos',
-    'hit3_30_real', 'hit3_30_placebo', 'delta_hit3_30',
-    'tail_loss_p95_real', 'tail_loss_p95_placebo'
+    'avg_net_real', 'avg_net_placebo',
+    'p_pos_real', 'p_pos_placebo',
+    'mean_win_real', 'p95_loss_real',
+    'max_dd_real', 'max_cons_loss_real', 'pf_real'
   ];
 
   const csvLines = [candHeaders.join(',')];
@@ -206,7 +239,7 @@ function main() {
   }
 
   const summaryTxt = [
-    'HLB2 Validation Judgement',
+    'HLB2 Validation Judgement (Pessimistic)',
     `generatedAt: ${summary.generatedAt}`,
     `runDir: ${runDir}`,
     '',
@@ -217,7 +250,7 @@ function main() {
   ];
 
   for (const c of candidates.slice(0, 10)) {
-    summaryTxt.push(`${c.type}/${c.side} decision=${c.decision} stage=${c.stage} count=${c.count} liftNet=${c.lift_net30.toFixed(4)} dP=${c.delta_p_net30_pos.toFixed(4)} dHit3=${c.delta_hit3_30.toFixed(4)}`);
+    summaryTxt.push(`${c.type}/${c.side} decision=${c.decision} stage=${c.stage} count=${c.count} avgNet=${c.avg_net_real.toFixed(4)} pPos=${(c.p_pos_real * 100).toFixed(1)}% p95Loss=${c.p95_loss_real.toFixed(4)} maxDD=${c.max_dd_real.toFixed(4)} maxConsLoss=${c.max_cons_loss_real} PF=${c.pf_real.toFixed(2)}`);
   }
 
   fs.writeFileSync(path.join(runDir, 'validation_judgement.json'), JSON.stringify({ summary, candidates }, null, 2));

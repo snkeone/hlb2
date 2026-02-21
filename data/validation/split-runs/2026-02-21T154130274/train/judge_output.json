@@ -1,0 +1,21 @@
+{
+  "runDir": "/home/hlws/hlb2/data/validation/split-runs/2026-02-21T154130274/train",
+  "generatedAt": "2026-02-21T15:42:18.113Z",
+  "thresholds": {
+    "minCount": 300,
+    "minCountFinal": 1000,
+    "minPPos": 0.55,
+    "maxTailLossRatio": 3.5,
+    "maxConsLoss": 12,
+    "maxDDRatio": 5
+  },
+  "totals": {
+    "realRows": 910,
+    "placeboRows": 910,
+    "groupsEvaluated": 10,
+    "adoptCandidates": 0,
+    "watchlist": 0,
+    "rejected": 0,
+    "holdSample": 10
+  }
+}

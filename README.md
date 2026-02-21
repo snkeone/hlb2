@@ -47,6 +47,14 @@ Judgement:
 npm run v2:eval:judge -- --out-dir /home/hlws/hlb2/data/validation/run-latest
 ```
 
+Split validation (Train / Validate / Forward):
+```bash
+npm run v2:eval:split -- \
+  --train /home/hlws/hlws-bot/logs/raw-20260220.jsonl.gz,/home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz \
+  --validate /home/hlws/hlws-bot/logs/raw-20260222.jsonl.gz \
+  --forward /home/hlws/hlws-bot/logs/raw-20260223.jsonl.gz
+```
+
 Full cycle (status + Discord report):
 ```bash
 npm run v2:run:cycle -- /home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz
@@ -62,8 +70,24 @@ npm run v2:notify -- failed "Run aborted due to missing input"
 ## Outputs
 - `events_labeled.csv`: event labels with pessimistic columns (`dynSlipBps`, `net30Pes`, `makerFilled`)
 - `event_stats.csv`: aggregated KPI per cohort/type/side
+- `event_stats_regime.csv`: KPI per regime bucket (`vol/spread/liquidity`)
 - `candles_1s.csv`: reconstructed 1s candle view
 - `summary.json`: run parameters and counters
+
+## Live Shadow Test
+Enable pseudo-execution logging on runtime (no real order impact):
+```bash
+V2_SHADOW_ENABLED=1 V2_SHADOW_HOLD_MS=30000 V2_SHADOW_NOTIONAL_USD=1000 node ws/server.js
+```
+
+Shadow logs are written via runtime logger as:
+- `type=shadow_open`
+- `type=shadow_close`
+
+Summarize shadow performance:
+```bash
+npm run v2:shadow:summary -- --input /home/hlws/hlb2/logs/raw-YYYYMMDD.jsonl --out /home/hlws/hlb2/data/validation/shadow_summary.json
+```
 
 ## Done Signal
 Validation completion is confirmed by:
