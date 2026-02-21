@@ -116,6 +116,20 @@ async function HLWSClient(opts = {}) {
 			restIntervalMs: syncCfg.restIntervalMs,
 			driftThresholdRatio: syncCfg.driftThresholdRatio,
 			compareTopLevels: syncCfg.compareTopLevels,
+			onResynced: ({ coin, reason, snapshot }) => {
+				const ts = now();
+				const synthetic = {
+					channel: 'l2Book',
+					data: {
+						coin,
+						time: ts,
+						levels: [snapshot.bids, snapshot.asks]
+					}
+				};
+				const event = { ts, channel: 'orderbook', data: synthetic };
+				log({ type: 'oob_snapshot_applied', reason, coin, ts });
+				try { handlers.orderbook.handleOrderbook(event); } catch (e) { log({ type: 'handler_error', handler: 'orderbook_oob_snapshot', detail: e && e.message }); }
+			},
 			logger: (event) => {
 				if (logger && typeof logger.write === 'function') {
 					logger.write(event).catch(() => {});

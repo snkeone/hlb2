@@ -30,6 +30,7 @@
     "v2:window:files": "node scripts/ops/select_window_files.js",
     "v2:logs:retention": "bash scripts/ops/log_retention.sh",
     "v2:run:cycle": "bash scripts/ops/run_validation_cycle.sh",
+    "v2:notify": "bash scripts/ops/notify_discord.sh",
     "depcruise:b2:local": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "dep:check:b2hub": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "test": "NODE_OPTIONS=--experimental-vm-modules LOG_TRADES_PATH=test-logs/jest/trades.jsonl jest",

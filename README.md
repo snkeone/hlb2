@@ -47,9 +47,16 @@ Judgement:
 npm run v2:eval:judge -- --out-dir /home/hlws/hlb2/data/validation/run-latest
 ```
 
-Full cycle (status + mail report):
+Full cycle (status + Discord report):
 ```bash
-REPORT_EMAIL=your@mail.example npm run v2:run:cycle -- /home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz
+npm run v2:run:cycle -- /home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz
+```
+
+Manual progress notification to Discord:
+```bash
+npm run v2:notify -- progress "Step 3 dual-sync integrated"
+npm run v2:notify -- done "Validation batch completed"
+npm run v2:notify -- failed "Run aborted due to missing input"
 ```
 
 ## Outputs

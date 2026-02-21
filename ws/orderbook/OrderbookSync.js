@@ -47,7 +47,8 @@ export function createOrderbookSync({
   restIntervalMs = 60000,
   driftThresholdRatio = 0.01,
   compareTopLevels = 5,
-  logger = () => {}
+  logger = () => {},
+  onResynced = null
 } = {}) {
   const state = {
     localBook: null,
@@ -105,6 +106,7 @@ export function createOrderbookSync({
     if (state.inFlight) return false;
     state.inFlight = true;
     setResyncState(true, reason);
+    let snapshotForCallback = null;
     try {
       const restBook = await fetchRestBook();
       if (!restBook) {
@@ -115,6 +117,7 @@ export function createOrderbookSync({
       replaceLocalBook(restBook, reason);
       state.lastSyncTs = Date.now();
       state.resyncCount += 1;
+      snapshotForCallback = cloneBook(restBook);
       log({ channel: 'orderbook_sync', type: 'resynced', reason, resyncCount: state.resyncCount });
       return true;
     } catch (err) {
@@ -123,6 +126,13 @@ export function createOrderbookSync({
     } finally {
       setResyncState(false, reason);
       state.inFlight = false;
+      if (snapshotForCallback && typeof onResynced === 'function') {
+        try {
+          onResynced({ coin, reason, snapshot: snapshotForCallback });
+        } catch (err) {
+          log({ channel: 'orderbook_sync', type: 'resync_callback_failed', reason, detail: err?.message || String(err) });
+        }
+      }
     }
   }
 

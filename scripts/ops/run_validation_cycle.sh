@@ -6,6 +6,14 @@ STATUS_DIR="$ROOT_DIR/logs/ops"
 RUNS_DIR="$ROOT_DIR/data/validation/runs"
 mkdir -p "$STATUS_DIR" "$RUNS_DIR"
 
+# Load local env overrides (not tracked by git)
+if [ -f "$ROOT_DIR/.env.local" ]; then
+  # shellcheck disable=SC1091
+  set -a
+  source "$ROOT_DIR/.env.local"
+  set +a
+fi
+
 STATUS_FILE="$STATUS_DIR/validation_status.json"
 LAST_OK_FILE="$STATUS_DIR/validation_last_ok.json"
 DONE_MARKER="$STATUS_DIR/VALIDATION_DONE"
@@ -29,6 +37,8 @@ notify_user() {
   local level="$1"
   local msg="$2"
   local mail_script="$ROOT_DIR/scripts/ops/send_validation_report_mail.sh"
+  local discord_script="$ROOT_DIR/scripts/ops/send_validation_report_discord.sh"
+  local email_enabled="${V2_NOTIFY_EMAIL_ENABLED:-0}"
 
   # 1) Optional external notifier (recommended for long runs)
   # Example:
@@ -40,14 +50,21 @@ notify_user() {
     set -e
   fi
 
-  # 2) Email notification using existing REPORT_EMAIL + msmtp setup.
-  if [ -x "$mail_script" ]; then
+  # 2) Discord webhook notification (recommended)
+  if [ -x "$discord_script" ]; then
+    set +e
+    "$discord_script" "$level" "$msg" "$RUN_ID" "$OUT_DIR"
+    set -e
+  fi
+
+  # 3) Optional email notification (disabled by default)
+  if [ "$email_enabled" = "1" ] && [ -x "$mail_script" ]; then
     set +e
     "$mail_script" "$level" "$msg" "$RUN_ID" "$OUT_DIR"
     set -e
   fi
 
-  # 3) Local terminal bell fallback
+  # 4) Local terminal bell fallback
   # Works when running in an attached terminal.
   printf '\a' || true
 }
