@@ -4,8 +4,12 @@ node_modules/
 
 logs/
 data/raw_ws/
+data/runs/
+data/ws-visual/
+data/ws-visual-sample/
 data/validation/runs/
 data/validation/run-*/
+data/validation/run-latest/
 data/validation/*.csv
 data/validation/*.json
 
