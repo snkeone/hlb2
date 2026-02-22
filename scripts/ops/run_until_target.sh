@@ -12,7 +12,7 @@ if [ -f "$ROOT_DIR/.env.local" ]; then
   set +a
 fi
 
-INPUT_DIR="${V2_INPUT_DIR:-/home/hlws/hlws-bot/logs}"
+INPUT_DIR="${V2_INPUT_DIR:-$ROOT_DIR/data/raw_ws}"
 INPUT_GLOB="${V2_INPUT_GLOB:-raw-*.jsonl.gz}"
 INTERVAL_SEC="${V2_LOOP_INTERVAL_SEC:-900}"
 TARGET_ADOPT="${V2_TARGET_ADOPT:-1}"
@@ -71,4 +71,3 @@ while true; do
 
   sleep "$INTERVAL_SEC"
 done
-

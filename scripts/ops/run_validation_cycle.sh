@@ -18,7 +18,7 @@ STATUS_FILE="$STATUS_DIR/validation_status.json"
 LAST_OK_FILE="$STATUS_DIR/validation_last_ok.json"
 DONE_MARKER="$STATUS_DIR/VALIDATION_DONE"
 
-INPUT="${1:-/home/hlws/hlws-bot/logs/raw-20260221.jsonl.gz}"
+INPUT="${1:-$ROOT_DIR/data/raw_ws/raw-20260221.jsonl.gz}"
 MAX_LINES="${MAX_LINES:-0}"
 SAMPLE_MS="${SAMPLE_MS:-250}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
