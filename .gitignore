@@ -16,3 +16,7 @@ data/validation/*.json
 *.log
 *.pid
 .DS_Store
+
+# runtime state snapshots (mutable, machine-local)
+ws/engine_state*.json
+ws/executor_state.json
