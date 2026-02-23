@@ -67,6 +67,28 @@ npm run v2:notify -- done "Validation batch completed"
 npm run v2:notify -- failed "Run aborted due to missing input"
 ```
 
+WS lead research (short + mid horizon) daily/weekly automation:
+```bash
+# Webhook selection (priority):
+# 1) WS_LEAD_DISCORD_WEBHOOK_URL (optional dedicated channel)
+# 2) DISCORD_WEBHOOK_URL (existing V2 default hook)
+
+# Build short/mid metrics + stability + relation
+npm run research:lead:daily
+
+# Create digest text/json
+npm run research:lead:digest:daily
+npm run research:lead:digest:weekly
+
+# Send digest to Discord
+npm run research:lead:discord:daily
+npm run research:lead:discord:weekly
+
+# One-shot automation (run + verify + digest + discord notify)
+npm run research:lead:report:daily
+npm run research:lead:report:weekly
+```
+
 ## Outputs
 - `events_labeled.csv`: event labels with pessimistic columns (`dynSlipBps`, `net30Pes`, `makerFilled`)
 - `event_stats.csv`: aggregated KPI per cohort/type/side
