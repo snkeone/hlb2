@@ -45,7 +45,10 @@ export function collectFlowImbalanceSensor(ioMetrics = {}, tradeConfig = {}) {
     0,
     Math.floor(toNumber(bucket?.tradeCount, toNumber(flow.tradeCount, 0)))
   );
-  const flowPressure = toNumber(bucket?.flowPressure, toNumber(flow.flowPressure, 0));
+  const flowPressure = toNumber(
+    bucket?.ofi,
+    toNumber(bucket?.flowPressure, toNumber(flow.ofi, toNumber(flow.flowPressure, 0)))
+  );
   const normalizedFlowPressure = Number.isFinite(flowPressure)
     ? clamp(flowPressure, -1, 1)
     : null;
@@ -57,8 +60,8 @@ export function collectFlowImbalanceSensor(ioMetrics = {}, tradeConfig = {}) {
   const minTrades5 = Math.max(1, Math.floor(toNumber(cfg.divergenceMinTrades5s, 3)));
   const minTrades60 = Math.max(minTrades5, Math.floor(toNumber(cfg.divergenceMinTrades60s, 15)));
   const shortStrongTh = clamp(toNumber(cfg.divergenceShortStrength, 0.3), 0.05, 0.95);
-  const fp5 = toNumber(w5?.flowPressure, 0);
-  const fp60 = toNumber(w60?.flowPressure, 0);
+  const fp5 = toNumber(w5?.ofi, toNumber(w5?.flowPressure, 0));
+  const fp60 = toNumber(w60?.ofi, toNumber(w60?.flowPressure, 0));
 
   return {
     available: true,

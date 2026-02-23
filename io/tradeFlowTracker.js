@@ -99,6 +99,8 @@ export class TradeFlowTracker {
         enabled: false,
         windowMs: this.config.defaultWindowMs,
         windows: {},
+        ofi: 0,
+        ofi30s: 0,
         flowPressure: 0,
         tradeCount: 0,
         buyVolumeUsd: 0,
@@ -153,6 +155,7 @@ export class TradeFlowTracker {
         volumeUsd,
         buyVolumeUsd,
         sellVolumeUsd,
+        ofi: flowPressure,
         flowPressure,
         avgTradeNotionalUsd,
         largeTradeCount,
@@ -168,12 +171,14 @@ export class TradeFlowTracker {
       volumeUsd: 0,
       buyVolumeUsd: 0,
       sellVolumeUsd: 0,
+      ofi: 0,
       flowPressure: 0,
       avgTradeNotionalUsd: 0,
       largeTradeCount: 0,
       tradeRatePerSec: 0,
       vwap: null
     };
+    const window30 = windows['30000'] ?? windows[30000] ?? null;
 
     return {
       enabled: true,
@@ -185,6 +190,8 @@ export class TradeFlowTracker {
       volumeUsd: active.volumeUsd,
       buyVolumeUsd: active.buyVolumeUsd,
       sellVolumeUsd: active.sellVolumeUsd,
+      ofi: toFiniteNumber(active.ofi, toFiniteNumber(active.flowPressure, 0)),
+      ofi30s: toFiniteNumber(window30?.ofi, toFiniteNumber(window30?.flowPressure, 0)),
       flowPressure: active.flowPressure,
       avgTradeNotionalUsd: active.avgTradeNotionalUsd,
       largeTradeCount: active.largeTradeCount,

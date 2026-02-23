@@ -273,7 +273,7 @@
     "cleanupIntervalMs": 3000
   },
   "entryFlowGate": {
-    "enabled": false,
+    "enabled": true,
     "mode": "hostile_only",
     "windowMs": 30000,
     "minTrades": 10,
@@ -414,7 +414,7 @@
     "tpExitMode": "auto"
   },
   "metaGate": {
-    "enabled": false,
+    "enabled": true,
     "maxSpreadBps": 0.5,
     "maxSpreadJumpBps": 0.8,
     "maxPriceVelocityBps": 1.2,
@@ -439,7 +439,7 @@
     }
   },
   "startupGuard": {
-    "enabled": false,
+    "enabled": true,
     "noOrderMs": 300000,
     "windowMs": 7200000,
     "sizeScalar": 0.85,
@@ -479,7 +479,7 @@
       },
       "rangeMode": "distance",
       "entryFlowGate": {
-        "enabled": false,
+        "enabled": true,
         "mode": "hostile_only",
         "divergenceGuardEnabled": false,
         "hostileThresholdLong": 0.75,
@@ -489,7 +489,7 @@
       },
       "requireStructuralPath": true,
       "srReferenceGuard": {
-        "enabled": false,
+        "enabled": true,
         "windowUsd": 80,
         "minRank": 0.1,
         "minScore": 0,
@@ -510,7 +510,7 @@
       "requireReady": true
     },
     "edgeControl": {
-      "baseRatio": 0.3,
+      "baseRatio": 0.25,
       "minThresholdUsd": 8,
       "maxThresholdUsd": 5000
     },
@@ -629,8 +629,8 @@
   },
   "srDistanceGuard": {
     "enabled": true,
-    "minSRDistanceUsd": 0,
-    "maxSRDistanceUsd": 5000
+    "minSRDistanceUsd": 80,
+    "maxSRDistanceUsd": 2500
   },
   "rangeFilter": {
     "lookbackMin": 15,
@@ -683,10 +683,10 @@
   },
   "b0": {
     "enabled": true,
-    "mergeDistanceUsd": 1500,
+    "mergeDistanceUsd": 180,
     "maxLevelsPerSide": 12,
     "maxClustersPerSide": 6,
-    "dailyArenaBufferUsd": 500
+    "dailyArenaBufferUsd": 20
   },
   "sr": {
     "enabled": true,
@@ -762,7 +762,7 @@
     "minNetUsd": 1.8,
     "minNetPer100Notional": 0.016341643835616437,
     "exitMode": "maker",
-    "enabled": false,
+    "enabled": true,
     "strictMinNetFloor": true,
     "autoSizeBoost": true,
     "maxSizeBoostMul": 2.5,
