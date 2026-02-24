@@ -1,0 +1,10 @@
+# Run twice a day (UTC): 00:30 and 12:30
+# Edit ROOT to your repo path, then install:
+#   crontab scripts/research/cron_ws_pattern_reporting.example
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ROOT=/home/snkeone/projects/hlws-v2
+
+30 0,12 * * * cd $ROOT && bash scripts/research/run_ws_pattern_reporting.sh scheduled >> logs/ops/ws_pattern_pipeline/cron.log 2>&1

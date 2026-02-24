@@ -8,6 +8,7 @@
 
 import { normalizeOrderbook } from './orderbook.js';
 import { normalizeTrades } from './trades.js';
+import { normalizeLiquidations } from './liquidations.js';
 import { normalizeCtx } from './ctx.js';
 import { normalizeMid } from './mid.js';
 import bridgeEmitter from '../../core/bridgeEmitter.js';
@@ -32,6 +33,10 @@ export function normalizeEvent(raw) {
       
       case 'trades':
         return emitAndReturn('normalize', normalizeTrades(raw));
+
+      case 'liquidations':
+      case 'liquidation':
+        return emitAndReturn('normalize', normalizeLiquidations(raw));
       
       case 'activeAssetCtx':
         return emitAndReturn('normalize', normalizeCtx(raw));

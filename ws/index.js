@@ -46,7 +46,8 @@ const DEFAULT_CONFIG = {
 	SUBSCRIPTIONS: [
 		{ type: 'l2Book', coin: 'BTC' },
 		{ type: 'trades', coin: 'BTC' },
-		{ type: 'activeAssetCtx', coin: 'BTC' }
+		{ type: 'activeAssetCtx', coin: 'BTC' },
+		{ type: 'liquidations', coin: 'BTC' }
 	],
 	ORDERBOOK_SYNC: {
 		enabled: process.env.WS_OOB_SYNC_ENABLED === '1',
@@ -61,13 +62,15 @@ const DEFAULT_CONFIG = {
 async function loadHandlers() {
 	let orderbook = { handleOrderbook: () => {} };
 	let trades = { handleTrades: () => {} };
+	let liquidations = { handleLiquidations: () => {} };
 	let mid = { handle: () => {} };
 	let activeCtx = { handleActiveCtx: () => {} };
 	try { orderbook = await import('./handlers/orderbook.js'); } catch (e) { console.error('[WS] loadHandlers orderbook failed', e); }
 	try { trades = await import('./handlers/trades.js'); } catch (e) { console.error('[WS] loadHandlers trades failed', e); }
+	try { liquidations = await import('./handlers/liquidations.js'); } catch (e) { console.error('[WS] loadHandlers liquidations failed', e); }
 	try { mid = await import('./handlers/mid.js'); } catch (e) { console.error('[WS] loadHandlers mid failed', e); }
 	try { activeCtx = await import('./handlers/activeCtx.js'); } catch (e) { console.error('[WS] loadHandlers activeCtx failed', e); }
-	return { orderbook, trades, mid, activeCtx };
+	return { orderbook, trades, liquidations, mid, activeCtx };
 }
 
 // Load I/O module for reset() on reconnect
@@ -95,6 +98,7 @@ async function HLWSClient(opts = {}) {
 			CONFIG.SUBSCRIPTIONS.push({ type: 'l2Book', coin: symbol });
 			CONFIG.SUBSCRIPTIONS.push({ type: 'trades', coin: symbol });
 			CONFIG.SUBSCRIPTIONS.push({ type: 'activeAssetCtx', coin: symbol });
+			CONFIG.SUBSCRIPTIONS.push({ type: 'liquidations', coin: symbol });
 		}
 	}
 	
@@ -206,6 +210,12 @@ async function HLWSClient(opts = {}) {
 			case 'trades': {
 				const event = { ts: now(), channel: 'trades', data };
 				try { handlers.trades.handleTrades(event); } catch (e) { log({ type: 'handler_error', handler: 'trades', detail: e && e.message }); }
+				break;
+			}
+			case 'liquidations':
+			case 'liquidation': {
+				const event = { ts: now(), channel: 'liquidations', data };
+				try { handlers.liquidations.handleLiquidations(event); } catch (e) { log({ type: 'handler_error', handler: 'liquidations', detail: e && e.message }); }
 				break;
 			}
 			case 'ticker':

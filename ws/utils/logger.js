@@ -12,10 +12,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // write to project-root ./logs
 const LOG_DIR = path.resolve(__dirname, '..', '..', 'logs');
-const MAX_QUEUE = 1000;
+const MAX_QUEUE = Math.max(1000, Number(process.env.WS_LOGGER_MAX_QUEUE || 5000));
+const DROP_WARN_INTERVAL_MS = 60 * 1000;
 
 let queue = [];
 let writing = false;
+let droppedTotal = 0;
+let droppedSinceLastWarn = 0;
+let lastDropWarnAt = 0;
 
 function todayFilename() {
   const d = new Date();
@@ -37,6 +41,14 @@ function enqueue(event) {
   if (queue.length >= MAX_QUEUE) {
     // drop oldest
     queue.shift();
+    droppedTotal += 1;
+    droppedSinceLastWarn += 1;
+    const now = Date.now();
+    if (now - lastDropWarnAt >= DROP_WARN_INTERVAL_MS) {
+      lastDropWarnAt = now;
+      console.warn(`[logger] queue overflow dropped=${droppedSinceLastWarn} totalDropped=${droppedTotal} maxQueue=${MAX_QUEUE}`);
+      droppedSinceLastWarn = 0;
+    }
   }
   queue.push(event);
 }
