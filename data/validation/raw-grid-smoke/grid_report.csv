@@ -1,0 +1,3 @@
+name,ok,runDir,sampleMs,maxDistanceUsd,minCount,minCountFinal,groupsEvaluated,adoptCandidates,watchlist,rejected,holdSample,score
+p1,true,/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p1,250,200,300,1000,10,0,0,10,0,-0.25
+p2,true,/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p2,300,220,300,1000,10,0,0,10,0,-0.25

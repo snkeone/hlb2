@@ -12,7 +12,8 @@ LATEST_DIR="$BASE_DIR/latest"
 SOURCE_DIR="$RUN_DIR/source"
 WAVE_DIR="$RUN_DIR/waveform"
 LIQ_DIR="$RUN_DIR/liquidation"
-mkdir -p "$SOURCE_DIR" "$WAVE_DIR" "$LIQ_DIR"
+LIQ_KEEP_DIR="$RUN_DIR/liquidation_keep"
+mkdir -p "$SOURCE_DIR" "$WAVE_DIR" "$LIQ_DIR" "$LIQ_KEEP_DIR"
 
 if ! (cd "$ROOT_DIR" && node scripts/research/ws_state_edge_eval.js \
   --logs-dir logs \
@@ -69,6 +70,18 @@ if ! (cd "$ROOT_DIR" && node scripts/research/ws_liq_wave_join.js \
   --match-window-sec 30 \
   --move-bps 5 >/tmp/ws_wave_liq_join.log 2>&1); then
   cat /tmp/ws_wave_liq_join.log || true
+  exit 1
+fi
+
+if ! (cd "$ROOT_DIR" && node scripts/research/ws_liq_wave_join.js \
+  --liq-events-csv "$LIQ_DIR/liq_events.csv" \
+  --wave-events-csv "$EVENTS_CSV" \
+  --wave-assignments-csv "$WAVE_DIR/waveform_assignments.csv" \
+  --pattern-status keep \
+  --out-dir "$LIQ_KEEP_DIR" \
+  --match-window-sec 30 \
+  --move-bps 5 >/tmp/ws_wave_liq_join_keep.log 2>&1); then
+  cat /tmp/ws_wave_liq_join_keep.log || true
   exit 1
 fi
 

@@ -1,0 +1,56 @@
+{
+  "generatedAt": "2026-02-24T14:58:51.744Z",
+  "input": [
+    "/home/snkeone/projects/hlws-v1/logs/raw-20260221.jsonl.gz"
+  ],
+  "profilesFile": "/home/snkeone/projects/hlws-v2/scripts/ops/raw_backtest_profiles.tmp.json",
+  "outDir": "/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke",
+  "totalProfiles": 2,
+  "best": {
+    "name": "p1",
+    "ok": true,
+    "runDir": "/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p1",
+    "sampleMs": 250,
+    "maxDistanceUsd": 200,
+    "minCount": 300,
+    "minCountFinal": 1000,
+    "groupsEvaluated": 10,
+    "adoptCandidates": 0,
+    "watchlist": 0,
+    "rejected": 10,
+    "holdSample": 0,
+    "score": -0.25
+  },
+  "leaderboard": [
+    {
+      "name": "p1",
+      "ok": true,
+      "runDir": "/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p1",
+      "sampleMs": 250,
+      "maxDistanceUsd": 200,
+      "minCount": 300,
+      "minCountFinal": 1000,
+      "groupsEvaluated": 10,
+      "adoptCandidates": 0,
+      "watchlist": 0,
+      "rejected": 10,
+      "holdSample": 0,
+      "score": -0.25
+    },
+    {
+      "name": "p2",
+      "ok": true,
+      "runDir": "/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p2",
+      "sampleMs": 300,
+      "maxDistanceUsd": 220,
+      "minCount": 300,
+      "minCountFinal": 1000,
+      "groupsEvaluated": 10,
+      "adoptCandidates": 0,
+      "watchlist": 0,
+      "rejected": 10,
+      "holdSample": 0,
+      "score": -0.25
+    }
+  ]
+}

@@ -57,6 +57,7 @@ function main() {
   const source = loadJson(path.join(runDirAbs, 'source', 'summary.json'));
   const wave = loadJson(path.join(runDirAbs, 'waveform', 'waveform_model.json'));
   const liqJoin = loadJson(path.join(runDirAbs, 'liquidation', 'liq_wave_join_summary.json'));
+  const liqJoinKeep = loadJson(path.join(runDirAbs, 'liquidation_keep', 'liq_wave_join_summary.json'));
   const liqBase = loadJson(path.join(runDirAbs, 'liquidation', 'liq_summary.json'));
   if (!source?.ok || !wave?.ok) {
     console.error('[ws_waveform_digest] required files are missing or invalid');
@@ -89,9 +90,12 @@ function main() {
     ...top.map((p, i) => `${i + 1}. ${p.patternName} status=${p.status} uplift=${p.uplift} fit=${p.fitRate} n=${p.n} stability=${p.dailySignStability}`),
     '',
     '[Liq x Wave Join]',
-    `liqEvents=${fmtInt(liqJoin?.nLiqEvents ?? liqBase?.nEvents)} matched=${fmtInt(liqJoin?.matched)} hitMove=${fmtInt(liqJoin?.hitMoveCount)} matchRatio=${fmt(liqJoin?.matchRatio)} hitOnMatched=${fmt(liqJoin?.hitMoveRatioOnMatched)} meanWaveRetBps=${fmt(liqJoin?.meanWaveRetBps)}`,
-    `buy[n=${fmtInt(liqJoin?.bySide?.buy?.n)} match=${fmt(liqJoin?.bySide?.buy?.matchRatio)} hit=${fmt(liqJoin?.bySide?.buy?.hitRatioOnMatched)} ret=${fmt(liqJoin?.bySide?.buy?.meanWaveRetBps)}]`,
-    `sell[n=${fmtInt(liqJoin?.bySide?.sell?.n)} match=${fmt(liqJoin?.bySide?.sell?.matchRatio)} hit=${fmt(liqJoin?.bySide?.sell?.hitRatioOnMatched)} ret=${fmt(liqJoin?.bySide?.sell?.meanWaveRetBps)}]`,
+    `ANY liqEvents=${fmtInt(liqJoin?.nLiqEvents ?? liqBase?.nEvents)} matched=${fmtInt(liqJoin?.matched)} hitMove=${fmtInt(liqJoin?.hitMoveCount)} matchRatio=${fmt(liqJoin?.matchRatio)} hitOnMatched=${fmt(liqJoin?.hitMoveRatioOnMatched)} meanWaveRetBps=${fmt(liqJoin?.meanWaveRetBps)}`,
+    `ANY buy[n=${fmtInt(liqJoin?.bySide?.buy?.n)} match=${fmt(liqJoin?.bySide?.buy?.matchRatio)} hit=${fmt(liqJoin?.bySide?.buy?.hitRatioOnMatched)} ret=${fmt(liqJoin?.bySide?.buy?.meanWaveRetBps)}]`,
+    `ANY sell[n=${fmtInt(liqJoin?.bySide?.sell?.n)} match=${fmt(liqJoin?.bySide?.sell?.matchRatio)} hit=${fmt(liqJoin?.bySide?.sell?.hitRatioOnMatched)} ret=${fmt(liqJoin?.bySide?.sell?.meanWaveRetBps)}]`,
+    `KEEP liqEvents=${fmtInt(liqJoinKeep?.nLiqEvents)} matched=${fmtInt(liqJoinKeep?.matched)} hitMove=${fmtInt(liqJoinKeep?.hitMoveCount)} matchRatio=${fmt(liqJoinKeep?.matchRatio)} hitOnMatched=${fmt(liqJoinKeep?.hitMoveRatioOnMatched)} meanWaveRetBps=${fmt(liqJoinKeep?.meanWaveRetBps)}`,
+    `KEEP buy[n=${fmtInt(liqJoinKeep?.bySide?.buy?.n)} match=${fmt(liqJoinKeep?.bySide?.buy?.matchRatio)} hit=${fmt(liqJoinKeep?.bySide?.buy?.hitRatioOnMatched)} ret=${fmt(liqJoinKeep?.bySide?.buy?.meanWaveRetBps)}]`,
+    `KEEP sell[n=${fmtInt(liqJoinKeep?.bySide?.sell?.n)} match=${fmt(liqJoinKeep?.bySide?.sell?.matchRatio)} hit=${fmt(liqJoinKeep?.bySide?.sell?.hitRatioOnMatched)} ret=${fmt(liqJoinKeep?.bySide?.sell?.meanWaveRetBps)}]`,
   ].join('\n');
 
   const digest = {
@@ -100,6 +104,7 @@ function main() {
     runDir: runDirAbs,
     counts,
     liqJoin: liqJoin ?? null,
+    liqJoinKeep: liqJoinKeep ?? null,
     liqBase: liqBase ?? null,
     top,
     text: lines,

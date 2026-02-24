@@ -50,18 +50,25 @@ function parseArgs(argv) {
   const out = {
     liqEventsCsv: 'logs/ops/ws_liq_monitor/latest/liq_events.csv',
     waveEventsCsv: 'logs/ops/ws_waveform_pipeline/latest/source/events_all.csv',
+    waveAssignmentsCsv: '',
     outDir: 'logs/ops/ws_liq_monitor/latest',
     matchWindowSec: 30,
     moveBps: 5,
+    patternStatus: 'any', // any | keep | watch | drop
+    preferKeep: 1, // 1: keep preferred (fallback any), 0: plain matching
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = String(argv[i] ?? '');
     if (a === '--liq-events-csv') out.liqEventsCsv = String(argv[++i] ?? out.liqEventsCsv);
     else if (a === '--wave-events-csv') out.waveEventsCsv = String(argv[++i] ?? out.waveEventsCsv);
+    else if (a === '--wave-assignments-csv') out.waveAssignmentsCsv = String(argv[++i] ?? out.waveAssignmentsCsv);
     else if (a === '--out-dir') out.outDir = String(argv[++i] ?? out.outDir);
     else if (a === '--match-window-sec') out.matchWindowSec = Math.max(1, Math.floor(toNum(argv[++i], out.matchWindowSec)));
     else if (a === '--move-bps') out.moveBps = Math.max(0.1, toNum(argv[++i], out.moveBps));
+    else if (a === '--pattern-status') out.patternStatus = String(argv[++i] ?? out.patternStatus).toLowerCase();
+    else if (a === '--prefer-keep') out.preferKeep = Number(toNum(argv[++i], out.preferKeep)) > 0 ? 1 : 0;
   }
+  if (!['any', 'keep', 'watch', 'drop'].includes(out.patternStatus)) out.patternStatus = 'any';
   return out;
 }
 
@@ -74,6 +81,50 @@ function lowerBound(arr, x) {
     else hi = mid;
   }
   return lo;
+}
+
+function parseEpochSecFromValue(v) {
+  if (v == null || v === '') return NaN;
+  const n = Number(v);
+  if (Number.isFinite(n)) {
+    if (n > 1e12) return Math.floor(n / 1000); // ms epoch
+    if (n > 1e9) return Math.floor(n); // sec epoch
+    return NaN;
+  }
+  const t = Date.parse(String(v));
+  return Number.isFinite(t) ? Math.floor(t / 1000) : NaN;
+}
+
+function parseWaveSec(row) {
+  const cands = [row?.sec, row?.ts, row?.timestamp, row?.time, row?.tsIso];
+  for (const v of cands) {
+    const sec = parseEpochSecFromValue(v);
+    if (Number.isFinite(sec)) return sec;
+  }
+  return NaN;
+}
+
+function parseLiqSec(row) {
+  const cands = [row?.tsSec, row?.ts, row?.timestamp, row?.time, row?.tsIso];
+  for (const v of cands) {
+    const sec = parseEpochSecFromValue(v);
+    if (Number.isFinite(sec)) return sec;
+  }
+  return NaN;
+}
+
+function getRange(rows, key) {
+  const xs = rows.map((r) => toNum(r?.[key], NaN)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!xs.length) return null;
+  return { min: xs[0], max: xs[xs.length - 1] };
+}
+
+function overlapRange(a, b) {
+  if (!a || !b) return null;
+  const min = Math.max(a.min, b.min);
+  const max = Math.min(a.max, b.max);
+  if (!(max >= min)) return { min: null, max: null, seconds: 0 };
+  return { min, max, seconds: Math.max(0, max - min) };
 }
 
 function nearestWave(waves, sec0, winSec) {
@@ -99,27 +150,60 @@ function main() {
   const args = parseArgs(process.argv);
   const liqRows = parseCsv(path.resolve(process.cwd(), args.liqEventsCsv));
   const waveRows = parseCsv(path.resolve(process.cwd(), args.waveEventsCsv));
+  const assignRows = args.waveAssignmentsCsv
+    ? parseCsv(path.resolve(process.cwd(), args.waveAssignmentsCsv))
+    : [];
+  const assignBySec = new Map();
+  if (assignRows.length > 0) {
+    for (const r of assignRows) {
+      const sec = parseWaveSec(r);
+      if (!Number.isFinite(sec)) continue;
+      assignBySec.set(sec, {
+        patternIdx: toNum(r.patternIdx, NaN),
+        patternName: String(r.patternName ?? ''),
+        patternStatus: String(r.patternStatus ?? '').toUpperCase(),
+      });
+    }
+  }
 
   const waves = waveRows
     .map((r) => {
-      const sec = toNum(r.sec, NaN);
+      const sec = parseWaveSec(r);
       const retBps = toNum(r.retBps, NaN);
+      const asg = assignBySec.get(sec);
       return Number.isFinite(sec) && Number.isFinite(retBps)
-        ? { sec, retBps, date: String(r.date ?? '') }
+        ? {
+            sec,
+            retBps,
+            date: String(r.date ?? ''),
+            patternIdx: asg ? asg.patternIdx : null,
+            patternName: asg ? asg.patternName : null,
+            patternStatus: asg ? asg.patternStatus : null,
+          }
         : null;
     })
     .filter(Boolean)
     .sort((a, b) => a.sec - b.sec);
+  const wavesFiltered = waves.filter((x) => {
+    if (args.patternStatus === 'any') return true;
+    if (!x.patternStatus) return false;
+    return x.patternStatus.toLowerCase() === args.patternStatus;
+  });
+  const keepWaves = waves.filter((x) => String(x?.patternStatus ?? '').toLowerCase() === 'keep');
 
   const joined = liqRows.map((r) => {
-    const sec = toNum(r.tsSec, NaN);
+    const sec = parseLiqSec(r);
     if (!Number.isFinite(sec)) {
       return { ...r, waveMatched: 0, waveHitMove: 0, waveDeltaSec: null, waveRetBps: null, waveDate: null };
     }
-    const w = nearestWave(waves, sec, args.matchWindowSec);
+    const shouldPreferKeep = args.patternStatus === 'any' && args.preferKeep === 1 && keepWaves.length > 0;
+    const wKeep = shouldPreferKeep ? nearestWave(keepWaves, sec, args.matchWindowSec) : null;
+    const wBase = nearestWave(wavesFiltered, sec, args.matchWindowSec);
+    const w = wKeep || wBase;
     const waveMatched = !!w;
     const waveRetBps = w ? w.retBps : NaN;
     const waveHitMove = w ? (Math.abs(waveRetBps) >= args.moveBps ? 1 : 0) : 0;
+    const waveMatchTier = wKeep ? 'keep' : (wBase ? 'base' : 'none');
     return {
       ...r,
       waveMatched: waveMatched ? 1 : 0,
@@ -127,6 +211,10 @@ function main() {
       waveDeltaSec: w ? (w.sec - sec) : null,
       waveRetBps: Number.isFinite(waveRetBps) ? round(waveRetBps, 6) : null,
       waveDate: w ? w.date : null,
+      wavePatternIdx: w ? w.patternIdx : null,
+      wavePatternName: w ? w.patternName : null,
+      wavePatternStatus: w ? w.patternStatus : null,
+      waveMatchTier,
     };
   });
 
@@ -150,6 +238,9 @@ function main() {
   }
 
   const outDirAbs = path.resolve(process.cwd(), args.outDir);
+  const liqSecRange = getRange(joined.map((x) => ({ sec: parseLiqSec(x) })), 'sec');
+  const waveSecRange = getRange(wavesFiltered, 'sec');
+  const overlap = overlapRange(liqSecRange, waveSecRange);
   fs.mkdirSync(outDirAbs, { recursive: true });
   fs.writeFileSync(path.join(outDirAbs, 'liq_wave_join.csv'), toCsv(joined), 'utf8');
   fs.writeFileSync(path.join(outDirAbs, 'liq_wave_join_summary.json'), `${JSON.stringify({
@@ -158,8 +249,11 @@ function main() {
     params: {
       liqEventsCsv: path.resolve(process.cwd(), args.liqEventsCsv),
       waveEventsCsv: path.resolve(process.cwd(), args.waveEventsCsv),
+      waveAssignmentsCsv: args.waveAssignmentsCsv ? path.resolve(process.cwd(), args.waveAssignmentsCsv) : null,
       matchWindowSec: args.matchWindowSec,
       moveBps: args.moveBps,
+      patternStatus: args.patternStatus,
+      preferKeep: args.preferKeep === 1,
     },
     nLiqEvents: n,
     matched: matched.length,
@@ -167,7 +261,14 @@ function main() {
     hitMoveCount: hits.length,
     hitMoveRatioOnMatched: matched.length > 0 ? round(hits.length / matched.length, 6) : null,
     meanWaveRetBps: round(meanWaveRet, 6),
+    matchedKeepTier: joined.filter((x) => x.waveMatchTier === 'keep').length,
+    matchedBaseTier: joined.filter((x) => x.waveMatchTier === 'base').length,
     bySide,
+    ranges: {
+      liqSecRange,
+      waveSecRange,
+      overlapSecRange: overlap,
+    },
   }, null, 2)}\n`, 'utf8');
 
   console.log(JSON.stringify({

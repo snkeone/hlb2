@@ -36,6 +36,8 @@ function parseArgs(argv) {
     burstUsd: 100000,
     horizonsSec: [30, 60, 180],
     cooldownSec: 20,
+    proxyMode: 'auto', // auto | force | off
+    proxyScale: 0.35,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = String(argv[i] ?? '');
@@ -49,8 +51,11 @@ function parseArgs(argv) {
       const hs = parseListNums(argv[++i]);
       if (hs.length > 0) out.horizonsSec = hs;
     } else if (a === '--cooldown-sec') out.cooldownSec = Math.max(0, Math.floor(toNum(argv[++i], out.cooldownSec)));
+    else if (a === '--proxy-mode') out.proxyMode = String(argv[++i] ?? out.proxyMode).toLowerCase();
+    else if (a === '--proxy-scale') out.proxyScale = Math.max(0, toNum(argv[++i], out.proxyScale));
   }
   out.horizonsSec = [...new Set(out.horizonsSec)].sort((a, b) => a - b);
+  if (!['auto', 'force', 'off'].includes(out.proxyMode)) out.proxyMode = 'auto';
   return out;
 }
 
@@ -77,10 +82,26 @@ function extractTrades(row) {
   for (const t of arr) {
     const ts = toNum(t?.time, toNum(t?.ts, toNum(row?.ts, NaN)));
     const px = toNum(t?.px, toNum(t?.price, NaN));
+    const sz = toNum(t?.sz, toNum(t?.size, NaN));
+    const side = normalizeSide(t?.side ?? t?.dir ?? t?.direction);
     if (!Number.isFinite(ts) || !Number.isFinite(px) || px <= 0) continue;
-    out.push({ ts, px });
+    out.push({ ts, px, sz, side });
   }
   return out;
+}
+
+function extractActiveCtx(row) {
+  const payload = row?.data?.data;
+  const ctx = payload?.ctx;
+  if (!ctx || typeof ctx !== 'object') return null;
+  const ts = toNum(payload?.time, toNum(payload?.ts, toNum(row?.ts, NaN)));
+  if (!Number.isFinite(ts)) return null;
+  const oi = toNum(ctx?.openInterest, NaN);
+  const markPx = toNum(ctx?.markPx, NaN);
+  const midPx = toNum(ctx?.midPx, NaN);
+  const px = Number.isFinite(markPx) ? markPx : midPx;
+  if (!Number.isFinite(oi) || oi < 0 || !Number.isFinite(px) || px <= 0) return null;
+  return { ts, oi, px };
 }
 
 function normalizeSide(rawSide) {
@@ -136,7 +157,7 @@ function toCsv(rows) {
   return `${[keys.join(',')].concat(rows.map((r) => keys.map((k) => esc(r[k])).join(','))).join('\n')}\n`;
 }
 
-async function processRaw(rawPath, priceBySec, liqBySec) {
+async function processRaw(rawPath, priceBySec, liqBySec, proxyRawBySec) {
   const rl = readline.createInterface({
     input: fs.createReadStream(rawPath, { encoding: 'utf8' }),
     crlfDelay: Infinity,
@@ -152,7 +173,30 @@ async function processRaw(rawPath, priceBySec, liqBySec) {
     const ch = String(row?.channel ?? '').toLowerCase();
     if (ch === 'trades') {
       const trades = extractTrades(row);
-      for (const t of trades) priceBySec.set(Math.floor(t.ts / 1000), t.px);
+      for (const t of trades) {
+        const sec = Math.floor(t.ts / 1000);
+        priceBySec.set(sec, t.px);
+        const cur = proxyRawBySec.get(sec) || { tradeBuyUsd: 0, tradeSellUsd: 0, tradeCount: 0, oi: null, px: null };
+        const side = normalizeSide(t?.side);
+        const usd = t.px * toNum(t?.sz, toNum(t?.size, NaN));
+        if (Number.isFinite(usd) && usd > 0) {
+          if (side === 'buy') cur.tradeBuyUsd += usd;
+          else if (side === 'sell') cur.tradeSellUsd += usd;
+        }
+        cur.tradeCount += 1;
+        proxyRawBySec.set(sec, cur);
+      }
+      continue;
+    }
+    if (ch === 'activeassetctx') {
+      const x = extractActiveCtx(row);
+      if (x) {
+        const sec = Math.floor(x.ts / 1000);
+        const cur = proxyRawBySec.get(sec) || { tradeBuyUsd: 0, tradeSellUsd: 0, tradeCount: 0, oi: null, px: null };
+        cur.oi = x.oi;
+        cur.px = x.px;
+        proxyRawBySec.set(sec, cur);
+      }
       continue;
     }
     if (ch === 'liquidations' || ch === 'liquidation') {
@@ -167,6 +211,47 @@ async function processRaw(rawPath, priceBySec, liqBySec) {
       }
     }
   }
+}
+
+function buildProxyLiquidations(priceSecs, proxyRawBySec, cfg) {
+  const bySec = new Map();
+  const secs = [...proxyRawBySec.keys()].sort((a, b) => a - b);
+  if (secs.length < 2) return bySec;
+  let prev = null;
+  for (const sec of secs) {
+    const cur = proxyRawBySec.get(sec);
+    if (!cur) continue;
+    const curOi = toNum(cur.oi, NaN);
+    const curPx = Number.isFinite(toNum(cur.px, NaN)) ? toNum(cur.px, NaN) : toNum(priceAtOrBefore(priceSecs, sec), NaN);
+    if (!prev) {
+      prev = { sec, oi: curOi, px: curPx };
+      continue;
+    }
+    const oiDelta = curOi - prev.oi;
+    const pxDelta = curPx - prev.px;
+    prev = { sec, oi: curOi, px: curPx };
+    if (!Number.isFinite(oiDelta) || !Number.isFinite(pxDelta) || !Number.isFinite(curPx) || curPx <= 0) continue;
+    if (oiDelta >= 0) continue;
+
+    const oiDropUsd = Math.abs(oiDelta) * curPx;
+    const tradeBuyUsd = toNum(cur.tradeBuyUsd, 0);
+    const tradeSellUsd = toNum(cur.tradeSellUsd, 0);
+    const tradeTotal = tradeBuyUsd + tradeSellUsd;
+    const flowImbalance = tradeTotal > 0 ? (tradeBuyUsd - tradeSellUsd) / tradeTotal : 0;
+    const aligned = pxDelta >= 0 ? Math.max(0, flowImbalance) : Math.max(0, -flowImbalance);
+    const confidence = 0.5 + 0.5 * aligned;
+    const usd = oiDropUsd * cfg.proxyScale * confidence;
+    if (!Number.isFinite(usd) || usd <= 0) continue;
+
+    const side = pxDelta >= 0 ? 'buy' : 'sell';
+    const row = bySec.get(sec) || { buyUsd: 0, sellUsd: 0, count: 0, proxyCount: 0 };
+    if (side === 'buy') row.buyUsd += usd;
+    else row.sellUsd += usd;
+    row.count += 1;
+    row.proxyCount += 1;
+    bySec.set(sec, row);
+  }
+  return bySec;
 }
 
 function buildEvents(priceSecs, liqBySec, cfg) {
@@ -232,7 +317,7 @@ function buildEvents(priceSecs, liqBySec, cfg) {
   return events;
 }
 
-function buildSummary(events, cfg, rawFiles) {
+function buildSummary(events, cfg, rawFiles, meta = {}) {
   const out = {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -242,8 +327,13 @@ function buildSummary(events, cfg, rawFiles) {
       burstUsd: cfg.burstUsd,
       horizonsSec: cfg.horizonsSec,
       cooldownSec: cfg.cooldownSec,
+      proxyMode: cfg.proxyMode,
+      proxyScale: cfg.proxyScale,
     },
     nEvents: events.length,
+    source: meta.source || 'unknown',
+    rawLiqSeconds: toNum(meta.rawLiqSeconds, 0),
+    proxyLiqSeconds: toNum(meta.proxyLiqSeconds, 0),
     bySide: {},
     horizons: {},
   };
@@ -276,15 +366,28 @@ async function main() {
 
   const priceBySec = new Map();
   const liqBySec = new Map();
+  const proxyRawBySec = new Map();
   for (const raw of raws) {
-    await processRaw(raw, priceBySec, liqBySec);
+    await processRaw(raw, priceBySec, liqBySec, proxyRawBySec);
   }
 
   const priceSecs = [...priceBySec.entries()]
     .map(([sec, px]) => ({ sec, px }))
     .sort((a, b) => a.sec - b.sec);
+  const rawLiqSeconds = liqBySec.size;
+  const proxyLiqBySec = buildProxyLiquidations(priceSecs, proxyRawBySec, args);
+  const proxyLiqSeconds = proxyLiqBySec.size;
+  if (args.proxyMode === 'force' || (args.proxyMode === 'auto' && rawLiqSeconds === 0 && proxyLiqSeconds > 0)) {
+    liqBySec.clear();
+    for (const [sec, row] of proxyLiqBySec.entries()) liqBySec.set(sec, row);
+  }
   const events = buildEvents(priceSecs, liqBySec, args);
-  const summary = buildSummary(events, args, raws);
+  const usedProxy = liqBySec.size > 0 && rawLiqSeconds === 0 && proxyLiqSeconds > 0;
+  const summary = buildSummary(events, args, raws, {
+    source: usedProxy ? 'proxy' : (rawLiqSeconds > 0 ? 'raw' : 'none'),
+    rawLiqSeconds,
+    proxyLiqSeconds,
+  });
 
   const outDirAbs = path.resolve(process.cwd(), args.outDir);
   fs.mkdirSync(outDirAbs, { recursive: true });

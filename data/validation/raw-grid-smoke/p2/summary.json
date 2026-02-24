@@ -1,0 +1,34 @@
+{
+  "inputs": [
+    "/home/snkeone/projects/hlws-v1/logs/raw-20260221.jsonl.gz"
+  ],
+  "outDir": "/home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p2",
+  "params": {
+    "maxLines": 0,
+    "sampleMs": 300,
+    "maxDistanceUsd": 220,
+    "wallAppearUsd": 250000,
+    "wallDisappearDropRatio": 0.6,
+    "minWallUsd": 150000,
+    "imbJumpThreshold": 0.2,
+    "burstUsd1s": 120000,
+    "spreadJumpBps": 0.25,
+    "clusterMs": 1000,
+    "notionalUsd": 1000,
+    "takerBps": 4.5,
+    "evalWorker": false,
+    "seed": 42
+  },
+  "counts": {
+    "lineCount": 1817880,
+    "malformed": 0,
+    "orderbookEvents": 129671,
+    "tradeEvents": 91661,
+    "midSamples": 129665,
+    "rawEvents": 117009,
+    "clusteredEvents": 103007,
+    "labeledReal": 102965,
+    "labeledPlacebo": 102965,
+    "candles1s": 71386
+  }
+}

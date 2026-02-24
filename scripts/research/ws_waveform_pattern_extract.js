@@ -497,10 +497,25 @@ function main() {
       }, cfg),
     };
   }).sort((a, b) => toNum(b.uplift, -Infinity) - toNum(a.uplift, -Infinity));
+  const summaryByIdx = new Map(summary.map((x) => [x.patternIdx, x]));
+  const assignments = allVectors.map((v, i) => {
+    const patternIdx = allAssign[i];
+    const meta = summaryByIdx.get(patternIdx) || {};
+    return {
+      date: String(v?.row?.date ?? ''),
+      sec: toNum(v?.sec, NaN),
+      ts: Number.isFinite(toNum(v?.row?.ts, NaN)) ? Math.floor(toNum(v.row.ts, NaN)) : null,
+      retBps: round(toNum(v?.row?.retBps, NaN), 6),
+      patternIdx,
+      patternName: String(meta.patternName ?? ''),
+      patternStatus: String(meta.status ?? 'DROP'),
+    };
+  }).filter((x) => Number.isFinite(x.sec));
 
   const outDirAbs = path.resolve(process.cwd(), cfg.outDir);
   fs.mkdirSync(outDirAbs, { recursive: true });
   fs.writeFileSync(path.join(outDirAbs, 'waveform_patterns.csv'), toCsv(summary), 'utf8');
+  fs.writeFileSync(path.join(outDirAbs, 'waveform_assignments.csv'), toCsv(assignments), 'utf8');
   fs.writeFileSync(path.join(outDirAbs, 'waveform_model.json'), `${JSON.stringify({
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -531,6 +546,7 @@ function main() {
     clusterOffsets,
     centroidsZ: eventCentroids.map((c) => c.map((v) => round(v, 8))),
     patterns: summary,
+    assignmentsCount: assignments.length,
   }, null, 2)}\n`, 'utf8');
 
   console.log(JSON.stringify({

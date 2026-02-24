@@ -1,0 +1,26 @@
+{
+  "profiles": [
+    {
+      "name": "baseline_250ms_200usd",
+      "sampleMs": 250,
+      "maxDistanceUsd": 200,
+      "minCount": 300,
+      "minCountFinal": 1000
+    },
+    {
+      "name": "dense_200ms_160usd",
+      "sampleMs": 200,
+      "maxDistanceUsd": 160,
+      "minCount": 300,
+      "minCountFinal": 1000
+    },
+    {
+      "name": "coarse_400ms_260usd",
+      "sampleMs": 400,
+      "maxDistanceUsd": 260,
+      "minCount": 300,
+      "minCountFinal": 1000
+    }
+  ]
+}
+

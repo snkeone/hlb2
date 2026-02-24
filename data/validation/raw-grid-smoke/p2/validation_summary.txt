@@ -1,0 +1,18 @@
+HLB2 Validation Judgement (Pessimistic)
+generatedAt: 2026-02-24T14:58:51.182Z
+runDir: /home/snkeone/projects/hlws-v2/data/validation/raw-grid-smoke/p2
+
+[totals] real=102965 placebo=102965 groups=10
+[decision] adopt=0 watchlist=0 reject=10 hold_sample=0
+
+[top candidates]
+wall_disappear/LONG decision=reject stage=robust count=3954 avgNet=-0.9768 pPos=9.0% p95Loss=2.3995 maxDD=3963.8221 maxConsLoss=633 PF=0.07
+wall_disappear/SHORT decision=reject stage=robust count=4498 avgNet=-0.9917 pPos=9.5% p95Loss=2.3103 maxDD=4460.7384 maxConsLoss=356 PF=0.07
+imbalance_jump/LONG decision=reject stage=robust count=9094 avgNet=-0.9951 pPos=7.1% p95Loss=2.1828 maxDD=9224.5292 maxConsLoss=1082 PF=0.05
+imbalance_jump/SHORT decision=reject stage=robust count=10374 avgNet=-1.0349 pPos=6.9% p95Loss=2.1904 maxDD=10736.2405 maxConsLoss=1338 PF=0.05
+wall_appear/LONG decision=reject stage=robust count=31564 avgNet=-1.0558 pPos=3.5% p95Loss=1.9049 maxDD=33529.8902 maxConsLoss=6115 PF=0.02
+wall_appear/SHORT decision=reject stage=robust count=37577 avgNet=-1.0768 pPos=3.1% p95Loss=1.8869 maxDD=40462.6848 maxConsLoss=8696 PF=0.02
+spread_jump/SHORT decision=reject stage=actionable count=1311 avgNet=-1.0564 pPos=10.5% p95Loss=2.4319 maxDD=1384.9376 maxConsLoss=136 PF=0.07
+spread_jump/LONG decision=reject stage=actionable count=1299 avgNet=-1.0884 pPos=8.2% p95Loss=2.8362 maxDD=1474.1675 maxConsLoss=303 PF=0.08
+trade_burst/SHORT decision=reject stage=actionable count=1626 avgNet=-1.1462 pPos=9.9% p95Loss=2.6616 maxDD=1863.7087 maxConsLoss=157 PF=0.08
+trade_burst/LONG decision=reject stage=actionable count=1668 avgNet=-1.2842 pPos=7.3% p95Loss=3.0576 maxDD=2200.5564 maxConsLoss=391 PF=0.05
