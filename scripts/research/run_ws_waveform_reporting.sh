@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 MODE="${1:-scheduled}"
+COLLECTOR_LOG_DIR="${V2_COLLECTOR_LOG_DIR:-$ROOT_DIR/../ws_collector/logs}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 BASE_DIR="$ROOT_DIR/logs/ops/ws_waveform_pipeline"
@@ -16,7 +17,7 @@ LIQ_KEEP_DIR="$RUN_DIR/liquidation_keep"
 mkdir -p "$SOURCE_DIR" "$WAVE_DIR" "$LIQ_DIR" "$LIQ_KEEP_DIR"
 
 if ! (cd "$ROOT_DIR" && node scripts/research/ws_state_edge_eval.js \
-  --logs-dir logs \
+  --logs-dir "$COLLECTOR_LOG_DIR" \
   --out-dir "$SOURCE_DIR" \
   --x-spec "avgSpreadBps:0.90:ge,tradeRate:0.85:ge" \
   --lead-window-sec 20 \
@@ -52,7 +53,7 @@ if ! (cd "$ROOT_DIR" && node scripts/research/ws_waveform_pattern_extract.js \
 fi
 
 if ! (cd "$ROOT_DIR" && node scripts/research/ws_liq_monitor.js \
-  --logs-dir logs \
+  --logs-dir "$COLLECTOR_LOG_DIR" \
   --out-dir "$LIQ_DIR" \
   --max-days 3 \
   --window-sec 10 \

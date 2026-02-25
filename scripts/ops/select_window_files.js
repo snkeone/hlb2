@@ -40,7 +40,7 @@ function main() {
     string: ['dir', 'prefix', 'out'],
     boolean: ['allow-empty'],
     default: {
-      dir: './data/raw_ws',
+      dir: '../ws_collector/logs',
       prefix: 'raw-',
       'pad-before-ms': 120000,
       'pad-after-ms': 120000,

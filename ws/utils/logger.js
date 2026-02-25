@@ -14,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = path.resolve(__dirname, '..', '..', 'logs');
 const MAX_QUEUE = Math.max(1000, Number(process.env.WS_LOGGER_MAX_QUEUE || 5000));
 const DROP_WARN_INTERVAL_MS = 60 * 1000;
+const RAW_LOG_ENABLED = String(process.env.WS_RAW_LOG_ENABLED ?? '0').toLowerCase() === '1';
 
 let queue = [];
 let writing = false;
@@ -87,6 +88,7 @@ const flushInterval = setInterval(() => {
 if (flushInterval.unref) flushInterval.unref();
 
 async function write(event) {
+  if (!RAW_LOG_ENABLED) return Promise.resolve(false);
   // event should be an object; we just enqueue and return
   if (!event || typeof event !== 'object') return Promise.resolve(false);
   enqueue(event);

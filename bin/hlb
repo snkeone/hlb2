@@ -1103,7 +1103,7 @@ async function main() {
   if (!cmd) usage();
 
   if (cmd === 'up') {
-    const upProfile = String(args._[1] ?? '').toLowerCase();
+    const upProfile = String(args._[1] ?? 'test').toLowerCase();
     let upIsDry = isDry;
     if (upProfile) {
       if (!['test', 'live', 'dry'].includes(upProfile)) {

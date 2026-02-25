@@ -14,10 +14,6 @@
     "build": "tsc",
     "build:runtime": "bash scripts/ops/build_runtime_dist.sh",
     "build:watch": "tsc --watch",
-    "test:ws": "node tests/ws-index-test-runner.js",
-    "ws:run": "node tests/ws-index-run.js",
-    "stale:check": "node tests/stale-test.js",
-    "logic:log": "node tests/logic-log-run.js",
     "ops:sync": "bash scripts/ops/sync_dual_source.sh",
     "ops:drift": "bash scripts/ops/report_dual_source_drift.sh",
     "ops:tune": "node scripts/ops/auto_tune_from_logs.js",
@@ -77,7 +73,6 @@
     "depcruise:b2:local": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "dep:check:b2hub": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "test": "NODE_OPTIONS=--experimental-vm-modules LOG_TRADES_PATH=test-logs/jest/trades.jsonl jest",
-    "test:normalize": "jest tests/normalize-",
     "research:edge:compare": "node scripts/research/ws_edge_compare.js"
   },
   "dependencies": {
