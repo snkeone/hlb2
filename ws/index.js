@@ -1,6 +1,7 @@
 import { markLayer } from './status/tracker.js';
 import { evaluateStatus } from './status/evaluator.js';
 import { createOrderbookSync } from './orderbook/OrderbookSync.js';
+import { createSharedFeedTail } from './sharedFeedTail.js';
 /**
  * HLWS-BOT / WebSocket Core (skeleton only)
  * 目的: Hyperliquid WS 接続・再接続・ルーティング枠組み
@@ -90,6 +91,13 @@ function makeConnectionState() {
 
 async function HLWSClient(opts = {}) {
 	const CONFIG = Object.assign({}, DEFAULT_CONFIG, opts.config || {});
+	const sharedFeedFile = String(
+		opts?.config?.sharedFeedFile ??
+		process.env.WS_SHARED_FEED_FILE ??
+		''
+	).trim();
+	const useSharedFeed = sharedFeedFile.length > 0;
+	const sharedFeedReplayFromStart = String(process.env.WS_SHARED_FEED_REPLAY_FROM_START ?? '').trim() === '1';
 	
 	// ← #17修正: SUBSCRIPTIONS を設定から生成（BTC固定を解除）
 	if (opts.config?.symbols && Array.isArray(opts.config.symbols) && opts.config.symbols.length > 0) {
@@ -111,6 +119,7 @@ async function HLWSClient(opts = {}) {
 	let orderbookSync = null;
 	let staleMonitorTimer = null;
 	let reconnectTimer = null;
+	let sharedFeedTail = null;
 	let isStopped = false; // ← #1修正: 停止フラグ
 
 	const syncCfg = Object.assign({}, DEFAULT_CONFIG.ORDERBOOK_SYNC, opts?.config?.orderbookSync || {});
@@ -279,6 +288,7 @@ async function HLWSClient(opts = {}) {
 	}
 
 	function scheduleReconnect() {
+		if (useSharedFeed) return;
 		if (isStopped) return; // ← #1修正: 停止中なら再接続予約しない
 		if (reconnectTimer) return; // already scheduled
 		// MergeSpec: announce fixed delay before reconnect attempt
@@ -340,6 +350,28 @@ async function HLWSClient(opts = {}) {
 	}
 
 	function start(url) {
+		if (useSharedFeed) {
+			if (orderbookSync) orderbookSync.start();
+			state.isConnected = true;
+			state.retryCount = 0;
+			state.isStale = false;
+			sharedFeedTail = createSharedFeedTail({
+				filePath: sharedFeedFile,
+				replayFromStart: sharedFeedReplayFromStart,
+				onMessage: (message) => {
+					handleMessage(message);
+				},
+				onInfo: (event) => {
+					log(event);
+				},
+				onError: (err) => {
+					log({ type: 'shared_feed_error', detail: err?.message ?? String(err) });
+				}
+			});
+			sharedFeedTail.start();
+			log({ type: 'ws_open', source: 'shared_feed', file: sharedFeedFile });
+			return;
+		}
 		if (orderbookSync) orderbookSync.start();
 		// start stale monitor
 		if (!staleMonitorTimer) {
@@ -362,6 +394,10 @@ async function HLWSClient(opts = {}) {
 
 	function stop() {
 		isStopped = true; // ← #1修正: 停止フラグをセット
+		if (sharedFeedTail) {
+			sharedFeedTail.stop();
+			sharedFeedTail = null;
+		}
 		if (orderbookSync) orderbookSync.stop();
 		if (staleMonitorTimer) { clearInterval(staleMonitorTimer); staleMonitorTimer = null; }
 		clearReconnect();

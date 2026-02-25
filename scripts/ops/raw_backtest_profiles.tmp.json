@@ -1,6 +1,0 @@
-{
-  "profiles": [
-    {"name":"p1","sampleMs":250,"maxDistanceUsd":200,"minCount":300,"minCountFinal":1000},
-    {"name":"p2","sampleMs":300,"maxDistanceUsd":220,"minCount":300,"minCountFinal":1000}
-  ]
-}
