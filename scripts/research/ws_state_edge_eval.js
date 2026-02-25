@@ -160,8 +160,11 @@ function parseOptionalSpec(spec) {
 
 function extractTrades(row) {
   const out = [];
-  const d = row?.data;
-  const inner = d && typeof d === 'object' ? d.data : null;
+  const envelope = row?.message && typeof row.message === 'object' ? row.message : row;
+  const d = envelope?.data ?? row?.data;
+  const inner = Array.isArray(d)
+    ? d
+    : (d && typeof d === 'object' && Array.isArray(d.data) ? d.data : null);
   if (!Array.isArray(inner)) return out;
   for (const t of inner) {
     const ts = toNum(t?.time, toNum(row?.ts, NaN));
@@ -176,8 +179,11 @@ function extractTrades(row) {
 }
 
 function extractOrderbook(row) {
-  const d = row?.data;
-  const inner = d && typeof d === 'object' ? d.data : null;
+  const envelope = row?.message && typeof row.message === 'object' ? row.message : row;
+  const d = envelope?.data ?? row?.data;
+  const inner = (d && typeof d === 'object' && Array.isArray(d.levels))
+    ? d
+    : (d && typeof d === 'object' && d.data && typeof d.data === 'object' ? d.data : null);
   const ts = toNum(inner?.time, toNum(row?.ts, NaN));
   const levels = inner?.levels;
   if (!Number.isFinite(ts) || !Array.isArray(levels) || levels.length < 2) return null;
@@ -373,11 +379,12 @@ async function loadRaw(rawPath) {
     } catch {
       continue;
     }
-    const ch = String(row?.channel ?? '');
+    const envelope = row?.message && typeof row.message === 'object' ? row.message : row;
+    const ch = String(envelope?.channel ?? row?.channel ?? '');
     if (ch === 'trades') {
       const ex = extractTrades(row);
       for (const t of ex) trades.push(t);
-    } else if (ch === 'orderbook') {
+    } else if (ch === 'orderbook' || ch === 'l2Book') {
       const ob = extractOrderbook(row);
       if (ob) books.push(ob);
     }
