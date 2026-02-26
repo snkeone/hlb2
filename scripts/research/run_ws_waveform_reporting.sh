@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 MODE="${1:-scheduled}"
 COLLECTOR_LOG_DIR="${V2_COLLECTOR_LOG_DIR:-$ROOT_DIR/../ws_collector/logs}"
+LIQ_MAX_DAYS="${WS_LIQ_MAX_DAYS:-3}"
+LIQ_WINDOW_SEC="${WS_LIQ_WINDOW_SEC:-10}"
+LIQ_BURST_USD="${WS_LIQ_BURST_USD:-100000}"
+LIQ_HORIZONS_SEC="${WS_LIQ_HORIZONS_SEC:-30,60,180}"
+LIQ_COOLDOWN_SEC="${WS_LIQ_COOLDOWN_SEC:-20}"
+LIQ_PROXY_MODE="${WS_LIQ_PROXY_MODE:-auto}"
+LIQ_PROXY_SCALE="${WS_LIQ_PROXY_SCALE:-0.35}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 BASE_DIR="$ROOT_DIR/logs/ops/ws_waveform_pipeline"
@@ -55,11 +62,13 @@ fi
 if ! (cd "$ROOT_DIR" && node scripts/research/ws_liq_monitor.js \
   --logs-dir "$COLLECTOR_LOG_DIR" \
   --out-dir "$LIQ_DIR" \
-  --max-days 3 \
-  --window-sec 10 \
-  --burst-usd 100000 \
-  --horizons-sec 30,60,180 \
-  --cooldown-sec 20 >/tmp/ws_wave_liq_monitor.log 2>&1); then
+  --max-days "$LIQ_MAX_DAYS" \
+  --window-sec "$LIQ_WINDOW_SEC" \
+  --burst-usd "$LIQ_BURST_USD" \
+  --horizons-sec "$LIQ_HORIZONS_SEC" \
+  --cooldown-sec "$LIQ_COOLDOWN_SEC" \
+  --proxy-mode "$LIQ_PROXY_MODE" \
+  --proxy-scale "$LIQ_PROXY_SCALE" >/tmp/ws_wave_liq_monitor.log 2>&1); then
   cat /tmp/ws_wave_liq_monitor.log || true
   exit 1
 fi

@@ -75,12 +75,28 @@ function pickRawTargets(args) {
   return xs.slice(xs.length - args.maxDays);
 }
 
+function getEnvelope(row) {
+  return row?.message && typeof row.message === 'object' ? row.message : row;
+}
+
+function getPayload(envelope) {
+  const d = envelope?.data;
+  if (d && typeof d === 'object' && 'data' in d) return d.data;
+  return d;
+}
+
+function getEventTs(row, payload, fallback = NaN) {
+  return toNum(payload?.time, toNum(payload?.ts, toNum(row?.ts, fallback)));
+}
+
 function extractTrades(row) {
   const out = [];
-  const arr = row?.data?.data;
+  const envelope = getEnvelope(row);
+  const payload = getPayload(envelope);
+  const arr = Array.isArray(payload) ? payload : [];
   if (!Array.isArray(arr)) return out;
   for (const t of arr) {
-    const ts = toNum(t?.time, toNum(t?.ts, toNum(row?.ts, NaN)));
+    const ts = toNum(t?.time, toNum(t?.ts, getEventTs(row, payload, NaN)));
     const px = toNum(t?.px, toNum(t?.price, NaN));
     const sz = toNum(t?.sz, toNum(t?.size, NaN));
     const side = normalizeSide(t?.side ?? t?.dir ?? t?.direction);
@@ -91,10 +107,11 @@ function extractTrades(row) {
 }
 
 function extractActiveCtx(row) {
-  const payload = row?.data?.data;
+  const envelope = getEnvelope(row);
+  const payload = getPayload(envelope);
   const ctx = payload?.ctx;
   if (!ctx || typeof ctx !== 'object') return null;
-  const ts = toNum(payload?.time, toNum(payload?.ts, toNum(row?.ts, NaN)));
+  const ts = getEventTs(row, payload, NaN);
   if (!Number.isFinite(ts)) return null;
   const oi = toNum(ctx?.openInterest, NaN);
   const markPx = toNum(ctx?.markPx, NaN);
@@ -113,10 +130,11 @@ function normalizeSide(rawSide) {
 
 function extractLiquidations(row) {
   const out = [];
-  const payload = row?.data?.data;
+  const envelope = getEnvelope(row);
+  const payload = getPayload(envelope);
   const arr = Array.isArray(payload) ? payload : (payload && typeof payload === 'object' ? [payload] : []);
   for (const x of arr) {
-    const ts = toNum(x?.time, toNum(x?.ts, toNum(row?.ts, NaN)));
+    const ts = toNum(x?.time, toNum(x?.ts, getEventTs(row, payload, NaN)));
     if (!Number.isFinite(ts)) continue;
     const px = toNum(x?.px, toNum(x?.price, NaN));
     const sz = toNum(x?.sz, toNum(x?.size, NaN));
@@ -170,7 +188,8 @@ async function processRaw(rawPath, priceBySec, liqBySec, proxyRawBySec) {
     } catch {
       continue;
     }
-    const ch = String(row?.channel ?? '').toLowerCase();
+    const envelope = getEnvelope(row);
+    const ch = String(envelope?.channel ?? row?.channel ?? '').toLowerCase();
     if (ch === 'trades') {
       const trades = extractTrades(row);
       for (const t of trades) {
