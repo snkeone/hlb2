@@ -73,7 +73,13 @@
     "depcruise:b2:local": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "dep:check:b2hub": "dependency-cruiser --config .dependency-cruiser.b2-hub.draft.mjs logic",
     "test": "NODE_OPTIONS=--experimental-vm-modules LOG_TRADES_PATH=test-logs/jest/trades.jsonl jest",
-    "research:edge:compare": "node scripts/research/ws_edge_compare.js"
+    "research:edge:compare": "node scripts/research/ws_edge_compare.js",
+    "research:waveform:core:digest": "node scripts/research/ws_waveform_digest.js --run-dir logs/ops/ws_waveform_pipeline/latest --out logs/ops/ws_waveform_digest_scheduled.txt --json-out logs/ops/ws_waveform_digest_scheduled.json",
+    "research:waveform:core:discord": "bash scripts/research/send_ws_waveform_digest_discord.sh scheduled logs/ops/ws_waveform_digest_scheduled.txt",
+    "research:waveform:core:report": "bash scripts/research/run_ws_waveform_reporting.sh scheduled",
+    "research:waveform:motif:digest": "node scripts/research/ws_waveform_motif_watch_digest.js --runs-dir logs/ops/ws_waveform_pipeline/runs --out logs/ops/ws_waveform_motif_watch_pipeline/latest/ws_waveform_motif_watch_digest_scheduled.txt --json-out logs/ops/ws_waveform_motif_watch_pipeline/latest/ws_waveform_motif_watch_digest_scheduled.json",
+    "research:waveform:motif:discord": "bash scripts/research/send_ws_waveform_motif_watch_digest_discord.sh scheduled logs/ops/ws_waveform_motif_watch_pipeline/latest/ws_waveform_motif_watch_digest_scheduled.txt",
+    "research:waveform:motif:report": "bash scripts/research/run_ws_waveform_motif_watch_reporting.sh scheduled"
   },
   "dependencies": {
     "axios": "^1.7.9",

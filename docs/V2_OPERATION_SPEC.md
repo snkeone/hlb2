@@ -7,6 +7,17 @@
   - periodic validation cycle
 - V2 is **not** used for live order execution in current operation.
 
+## Objective Anchor (Always Refer)
+- Primary objective of V2 analysis:
+  - Find characteristic signals from raw WS logs.
+  - Apply validated signals to trading decision logic.
+  - Improve effect size (edge quality, stability, expected value), not just signal count.
+- Work execution rule:
+  - Each analysis/change must be tied to the objective above.
+  - `docs/V2_SCOPE_LOCK.md` is the fixed boundary reference.
+  - Keep an operation note in `docs/V2_WORK_LOG.md` for self-management.
+  - Use `docs/V2_WORKING_PRINCIPLES.md` as the per-task checklist.
+
 ## Mode Policy
 - Default operation route: `TEST` (live feed + test logic route).
 - Effective env for validation runtime:

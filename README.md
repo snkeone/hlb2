@@ -7,6 +7,11 @@ V2 repository for data-first WS validation and execution-reality checks.
 - V2 (`/home/hlws/hlb2`) is independent and can evolve freely.
 - Focus: ingest WS data, extract features, run placebo-aware validation, decide by KPI.
 
+## Operation References
+- Objective/checklist: `docs/V2_WORKING_PRINCIPLES.md`
+- Concise work log: `docs/V2_WORK_LOG.md`
+- Runtime operation spec: `docs/V2_OPERATION_SPEC.md`
+
 ## Repo Setup
 ```bash
 cd /home/hlws/hlb2
@@ -122,6 +127,19 @@ npm run research:edge:compare -- \
   --test-days 5 \
   --fee-bps 0.8 \
   --slippage-bps 1.2
+```
+
+WS waveform operation split (`core` + `motif watch`):
+```bash
+# Core waveform pipeline (existing)
+npm run research:waveform:core:report
+npm run research:waveform:core:digest
+npm run research:waveform:core:discord
+
+# Motif watch pipeline (new, 3-axis monitor)
+npm run research:waveform:motif:report
+npm run research:waveform:motif:digest
+npm run research:waveform:motif:discord
 ```
 
 ## Outputs
